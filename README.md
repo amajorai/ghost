@@ -1,6 +1,6 @@
 # Ghost
 
-> Eyes and hands for AI agents on the desktop — a Model Context Protocol (MCP) server for
+> Eyes and hands for AI agents on the desktop. A Model Context Protocol (MCP) server for
 > screen perception and input control.
 
 [![License](https://shieldcn.dev/badge/License-Apache--2.0-73DC8C.svg?logo=apache&logoColor=white)](./LICENSE)
@@ -11,12 +11,12 @@ OCR, UI-element detection) and *act* on it (click, type, scroll, drag), plus a r
 engine. Windows-first. It's a component of [Ryu](https://github.com/amajorai/ryu) but runs standalone
 with any MCP-capable client.
 
-- 👁️ **See** — screen capture, OCR, and UI-element detection over the accessibility tree.
-- ✋ **Act** — click, type, scroll, and drag through synthetic keyboard/mouse input.
-- 🎬 **Record → replay** — capture a task once, replay it deterministically as a parameterized recipe.
-- 🧩 **~30 MCP tools** — drop into any MCP client, or let Ryu Core spawn it as a sidecar. Stdio, no network port.
-- 🪟 **Windows-first** — with cross-platform (macOS/Linux) perception + input backends in progress.
-- 🔓 **Open & auditable** — dual-use by nature, so the behaviour is open source and, inside Ryu, consent-gated.
+- 👁️ **See.** Screen capture, OCR, and UI-element detection over the accessibility tree.
+- ✋ **Act.** Click, type, scroll, and drag through synthetic keyboard/mouse input.
+- 🎬 **Record → replay.** Capture a task once, replay it deterministically as a parameterized recipe.
+- 🧩 **~30 MCP tools.** Drop into any MCP client, or let Ryu Core spawn it as a sidecar. Stdio, no network port.
+- 🪟 **Windows-first.** Cross-platform (macOS/Linux) perception + input backends are in progress.
+- 🔓 **Open & auditable.** Dual-use by nature, so the behaviour is open source and, inside Ryu, consent-gated.
 
 ## Layout
 
@@ -44,6 +44,6 @@ it, gate it behind clear consent and treat it as a high-trust dependency. See [S
 
 ## Credits & license
 
-Ghost is derived from [Ghost OS](https://github.com/ghostwright/ghost-os) by Ghostwright (MIT) — the
+Ghost is derived from [Ghost OS](https://github.com/ghostwright/ghost-os) by Ghostwright (MIT). The
 original copyright + license notice are retained in [NOTICE](./NOTICE). Ghost is licensed under
 **Apache-2.0** (see [LICENSE](./LICENSE)) with MIT-licensed portions per NOTICE. © 2026 A Major Pte. Ltd.
