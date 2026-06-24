@@ -11,6 +11,13 @@ OCR, UI-element detection) and *act* on it (click, type, scroll, drag), plus a r
 engine. Windows-first. It's a component of [Ryu](https://github.com/amajorai/ryu) but runs standalone
 with any MCP-capable client.
 
+- 👁️ **See** — screen capture, OCR, and UI-element detection over the accessibility tree.
+- ✋ **Act** — click, type, scroll, and drag through synthetic keyboard/mouse input.
+- 🎬 **Record → replay** — capture a task once, replay it deterministically as a parameterized recipe.
+- 🧩 **~30 MCP tools** — drop into any MCP client, or let Ryu Core spawn it as a sidecar. Stdio, no network port.
+- 🪟 **Windows-first** — with cross-platform (macOS/Linux) perception + input backends in progress.
+- 🔓 **Open & auditable** — dual-use by nature, so the behaviour is open source and, inside Ryu, consent-gated.
+
 ## Layout
 
 | Path | What |
