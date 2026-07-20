@@ -1,6 +1,8 @@
 pub mod actions;
 pub mod annotate;
+pub mod journal;
 pub mod learning;
+pub mod overlay_events;
 pub mod perception;
 pub mod recipes;
 pub mod snapshot;

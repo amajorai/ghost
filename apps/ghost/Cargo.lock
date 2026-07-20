@@ -1125,7 +1125,7 @@ dependencies = [
 
 [[package]]
 name = "ghost"
-version = "0.0.1"
+version = "0.0.5"
 dependencies = [
  "anyhow",
  "base64",
@@ -1135,6 +1135,7 @@ dependencies = [
  "ghost-core",
  "ghost-eyes",
  "ghost-hands",
+ "ghost-permissions",
  "image",
  "imageproc",
  "ort",
@@ -1148,7 +1149,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-core"
-version = "0.0.1"
+version = "0.0.5"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1164,13 +1165,15 @@ dependencies = [
 
 [[package]]
 name = "ghost-eyes"
-version = "0.0.1"
+version = "0.0.5"
 dependencies = [
  "anyhow",
  "async-trait",
  "atspi",
  "core-graphics",
  "evdev",
+ "ghost-permissions",
+ "image",
  "objc2",
  "serde",
  "serde_json",
@@ -1182,7 +1185,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-hands"
-version = "0.0.1"
+version = "0.0.5"
 dependencies = [
  "anyhow",
  "core-graphics",
@@ -1194,6 +1197,10 @@ dependencies = [
  "windows",
  "x11rb",
 ]
+
+[[package]]
+name = "ghost-permissions"
+version = "0.0.5"
 
 [[package]]
 name = "gif"

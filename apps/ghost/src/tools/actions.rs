@@ -3,10 +3,11 @@ use serde_json::{json, Value};
 
 use ghost_eyes::{PlatformAXTree, AXTree};
 use ghost_hands::{
-    drag, focus_app, hover, long_press, mouse_click, press_key, scroll, send_hotkey, type_text,
-    window_action, MouseButton, WindowAction,
+    execute_click, execute_drag, focus_app, hover, long_press, mouse_click, plan_click, press_key,
+    scroll, send_hotkey, type_text, window_action, ClickMode, MouseButton, WindowAction,
 };
 
+use super::overlay_events;
 use super::{bool_param, f64_param, int_param, str_param};
 
 pub async fn ghost_click(params: Value) -> Result<Value> {
@@ -16,21 +17,32 @@ pub async fn ghost_click(params: Value) -> Result<Value> {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
+    // How to click: "auto" (default) presses via the accessibility API when the
+    // target is a real AX element (no cursor hijack), else a courteous HID click;
+    // "hid" is the legacy warp-and-click; "ax" is AX-press-only. See ghost_hands::mode.
+    let mode = ClickMode::parse(str_param(&params, "mode"));
+
     // Ref from a prior ghost_snapshot — re-identify (STALE_REF if gone) then click.
     if let Some(r) = str_param(&params, "ref") {
         let (x, y) = crate::tools::snapshot::resolve_ref(r).await?;
         let button = str_to_button(str_param(&params, "button").unwrap_or("left"));
         let count = int_param(&params, "count", 1) as u32;
-        tokio::task::spawn_blocking(move || mouse_click(x, y, button, count)).await??;
-        return Ok(json!({ "success": true, "x": x, "y": y, "ref": r, "method": "ref" }));
+        let plan = plan_click(mode, false, false);
+        overlay_events::press_start(x, y, "ghost_click");
+        let via = tokio::task::spawn_blocking(move || execute_click(x, y, button, count, plan)).await??;
+        overlay_events::press_end(x, y, "ghost_click");
+        return Ok(json!({ "success": true, "x": x, "y": y, "ref": r, "method": "ref", "via": via }));
     }
 
     // If x/y given, use coordinates directly
     if let (Some(x), Some(y)) = (params["x"].as_f64(), params["y"].as_f64()) {
         let button = str_to_button(str_param(&params, "button").unwrap_or("left"));
         let count = int_param(&params, "count", 1) as u32;
-        tokio::task::spawn_blocking(move || mouse_click(x as i32, y as i32, button, count)).await??;
-        return Ok(json!({ "success": true, "x": x, "y": y, "method": "coordinates" }));
+        let plan = plan_click(mode, false, true);
+        overlay_events::press_start(x as i32, y as i32, "ghost_click");
+        let via = tokio::task::spawn_blocking(move || execute_click(x as i32, y as i32, button, count, plan)).await??;
+        overlay_events::press_end(x as i32, y as i32, "ghost_click");
+        return Ok(json!({ "success": true, "x": x, "y": y, "method": "coordinates", "via": via }));
     }
 
     // dom_id: direct CDP lookup by CSS #id selector
@@ -45,8 +57,11 @@ pub async fn ghost_click(params: Value) -> Result<Value> {
                     let button = str_to_button(str_param(&params, "button").unwrap_or("left"));
                     let count = int_param(&params, "count", 1) as u32;
                     let text = el.text.clone();
-                    tokio::task::spawn_blocking(move || mouse_click(sx, sy, button, count)).await??;
-                    return Ok(json!({ "success": true, "x": sx, "y": sy, "element": text, "method": "cdp_dom_id" }));
+                    let plan = plan_click(mode, false, false);
+                    overlay_events::press_start(sx, sy, "ghost_click");
+                    let via = tokio::task::spawn_blocking(move || execute_click(sx, sy, button, count, plan)).await??;
+                    overlay_events::press_end(sx, sy, "ghost_click");
+                    return Ok(json!({ "success": true, "x": sx, "y": sy, "element": text, "method": "cdp_dom_id", "via": via }));
                 }
             }
         }
@@ -64,8 +79,11 @@ pub async fn ghost_click(params: Value) -> Result<Value> {
                     let button = str_to_button(str_param(&params, "button").unwrap_or("left"));
                     let count = int_param(&params, "count", 1) as u32;
                     let text = el.text.clone();
-                    tokio::task::spawn_blocking(move || mouse_click(sx, sy, button, count)).await??;
-                    return Ok(json!({ "success": true, "x": sx, "y": sy, "element": text, "method": "cdp_dom_class" }));
+                    let plan = plan_click(mode, false, false);
+                    overlay_events::press_start(sx, sy, "ghost_click");
+                    let via = tokio::task::spawn_blocking(move || execute_click(sx, sy, button, count, plan)).await??;
+                    overlay_events::press_end(sx, sy, "ghost_click");
+                    return Ok(json!({ "success": true, "x": sx, "y": sy, "element": text, "method": "cdp_dom_class", "via": via }));
                 }
             }
         }
@@ -80,8 +98,13 @@ pub async fn ghost_click(params: Value) -> Result<Value> {
             let cy = bounds.y + bounds.height as i32 / 2;
             let button = str_to_button(str_param(&params, "button").unwrap_or("left"));
             let count = int_param(&params, "count", 1) as u32;
-            tokio::task::spawn_blocking(move || mouse_click(cx, cy, button, count)).await??;
-            return Ok(json!({ "success": true, "x": cx, "y": cy, "element": el.title, "method": "ax_query" }));
+            // A real AX element was matched → auto/ax modes press it directly (no
+            // cursor warp); the physical-click fallback keeps the cursor courteous.
+            let plan = plan_click(mode, true, false);
+            overlay_events::press_start(cx, cy, "ghost_click");
+            let via = tokio::task::spawn_blocking(move || execute_click(cx, cy, button, count, plan)).await??;
+            overlay_events::press_end(cx, cy, "ghost_click");
+            return Ok(json!({ "success": true, "x": cx, "y": cy, "element": el.title, "method": "ax_query", "via": via }));
         }
     }
 
@@ -93,8 +116,11 @@ pub async fn ghost_click(params: Value) -> Result<Value> {
                 let (sx, sy) = ghost_core::cdp::viewport_to_screen(el.center_x, el.center_y, win_x, win_y);
                 let button = str_to_button(str_param(&params, "button").unwrap_or("left"));
                 let count = int_param(&params, "count", 1) as u32;
-                tokio::task::spawn_blocking(move || mouse_click(sx, sy, button, count)).await??;
-                return Ok(json!({ "success": true, "x": sx, "y": sy, "element": el.text, "method": "cdp" }));
+                let plan = plan_click(mode, false, false);
+                overlay_events::press_start(sx, sy, "ghost_click");
+                let via = tokio::task::spawn_blocking(move || execute_click(sx, sy, button, count, plan)).await??;
+                overlay_events::press_end(sx, sy, "ghost_click");
+                return Ok(json!({ "success": true, "x": sx, "y": sy, "element": el.text, "method": "cdp", "via": via }));
             }
         }
     }
@@ -119,7 +145,9 @@ pub async fn ghost_type(params: Value) -> Result<Value> {
         tokio::task::spawn_blocking(move || mouse_click(x, y, MouseButton::Left, 1)).await??;
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         let text_owned = text.to_string();
+        overlay_events::emit("type", x, y, "ghost_type");
         tokio::task::spawn_blocking(move || type_text(&text_owned, clear)).await??;
+        overlay_events::emit("done", x, y, "ghost_type");
         return Ok(json!({ "success": true, "typed": text, "ref": r, "method": "ref" }));
     }
 
@@ -180,7 +208,9 @@ pub async fn ghost_type(params: Value) -> Result<Value> {
     }
 
     let text_owned = text.to_string();
+    overlay_events::emit("type", 0, 0, "ghost_type");
     tokio::task::spawn_blocking(move || type_text(&text_owned, clear)).await??;
+    overlay_events::emit("done", 0, 0, "ghost_type");
     Ok(json!({ "success": true, "typed": text }))
 }
 
@@ -240,7 +270,9 @@ pub async fn ghost_scroll(params: Value) -> Result<Value> {
     }
 
     let dir = direction.to_string();
+    overlay_events::emit("scroll", x, y, "ghost_scroll");
     tokio::task::spawn_blocking(move || scroll(x, y, &dir, amount)).await??;
+    overlay_events::emit("done", x, y, "ghost_scroll");
     Ok(json!({ "success": true }))
 }
 
@@ -389,6 +421,11 @@ pub async fn ghost_drag(params: Value) -> Result<Value> {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
+    // Drag has no accessibility equivalent, so any non-"hid" mode gets the courteous
+    // restore: after the drop, the physical cursor returns to where it started if the
+    // user did not grab the mouse mid-drag.
+    let restore = !matches!(ClickMode::parse(str_param(&params, "mode")), ClickMode::Hid);
+
     let (from_x, from_y) = if let (Some(fx), Some(fy)) = (params["from_x"].as_f64(), params["from_y"].as_f64()) {
         (fx as i32, fy as i32)
     } else {
@@ -405,7 +442,9 @@ pub async fn ghost_drag(params: Value) -> Result<Value> {
         }
     };
 
-    tokio::task::spawn_blocking(move || drag(from_x, from_y, to_x, to_y, duration_ms, hold_ms)).await??;
+    overlay_events::press_start(from_x, from_y, "ghost_drag");
+    tokio::task::spawn_blocking(move || execute_drag(from_x, from_y, to_x, to_y, duration_ms, hold_ms, restore)).await??;
+    overlay_events::press_end(to_x, to_y, "ghost_drag");
     Ok(json!({ "success": true, "from": [from_x, from_y], "to": [to_x, to_y] }))
 }
 

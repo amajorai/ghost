@@ -1,4 +1,4 @@
-// All 30 MCP tool definitions — ported from ghost-os MCPTools.swift, plus
+// All 31 MCP tool definitions — ported from ghost-os MCPTools.swift, plus
 // ghost_snapshot (snapshot/ref model, ported in spirit from lahfir/agent-desktop).
 // These are the agent-facing contracts: names, descriptions, and parameter schemas.
 
@@ -82,6 +82,19 @@ pub fn definitions() -> Vec<Value> {
                 }
             })),
 
+        tool_rich("ghost_journal_marker",
+            "Add an explicit milestone to Shadow's local work journal. Use after completing a meaningful desktop action so the timeline can explain what happened.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "title":    { "type": "string", "description": "Short milestone title." },
+                    "body":     { "type": "string", "description": "Optional one-sentence detail." },
+                    "category": { "type": "string", "description": "Optional category such as Milestone, Deep Work, Communication, or Blocker." },
+                    "app":      { "type": "string", "description": "Optional app or workflow name to associate with this marker." }
+                },
+                "required": ["title"]
+            })),
+
         // Actions (10)
         tool_rich("ghost_click",
             "Click an element. Tries AX-native first, falls back to synthetic click. Returns post-click context.",
@@ -96,7 +109,8 @@ pub fn definitions() -> Vec<Value> {
                     "x":      { "type": "number",  "description": "Click at X coordinate instead of element." },
                     "y":      { "type": "number",  "description": "Click at Y coordinate." },
                     "button": { "type": "string",  "description": "left (default), right, or middle." },
-                    "count":  { "type": "integer", "description": "Click count: 1=single, 2=double, 3=triple." }
+                    "count":  { "type": "integer", "description": "Click count: 1=single, 2=double, 3=triple." },
+                    "mode":   { "type": "string",  "description": "auto (default): AX-press a resolved element without moving the physical cursor, else a courteous click that restores the cursor. hid: legacy warp-and-click. ax: AX-press only (errors if unpressable)." }
                 }
             })),
 
@@ -331,10 +345,18 @@ pub fn definitions() -> Vec<Value> {
 
 // ─── Schema helpers ───────────────────────────────────────────────────────────
 
-fn tool(name: &str, description: &str, props: &[(&str, &str, &str, bool)], required: &[&str]) -> Value {
+fn tool(
+    name: &str,
+    description: &str,
+    props: &[(&str, &str, &str, bool)],
+    required: &[&str],
+) -> Value {
     let mut properties = serde_json::Map::new();
     for (pname, ptype, pdesc, _) in props {
-        properties.insert(pname.to_string(), json!({ "type": ptype, "description": pdesc }));
+        properties.insert(
+            pname.to_string(),
+            json!({ "type": ptype, "description": pdesc }),
+        );
     }
     let mut schema = json!({ "type": "object", "properties": properties });
     if !required.is_empty() {

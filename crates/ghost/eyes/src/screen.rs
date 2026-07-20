@@ -168,20 +168,11 @@ pub use windows_impl::WindowsScreenCapture;
 
 // ─── macOS ────────────────────────────────────────────────────────────────────
 
-#[cfg(target_os = "macos")]
-mod macos_ffi {
-    use std::ffi::c_void;
-    extern "C" {
-        pub fn CGDisplayCreateImage(displayID: u32) -> *const c_void;
-        pub fn CGImageGetWidth(image: *const c_void) -> usize;
-        pub fn CGImageGetHeight(image: *const c_void) -> usize;
-        pub fn CGImageGetDataProvider(image: *const c_void) -> *const c_void;
-        pub fn CGDataProviderCopyData(provider: *const c_void) -> *const c_void;
-        pub fn CFDataGetLength(data: *const c_void) -> isize;
-        pub fn CFDataGetBytePtr(data: *const c_void) -> *const u8;
-        pub fn CFRelease(cf: *const c_void);
-    }
-}
+// Screen Recording permission lives in the shared `ghost-permissions` crate
+// (single source of truth across the desktop app, CLI, Core, and this sidecar).
+// Re-exported so existing `ghost_eyes::screen_recording_granted` call sites keep
+// working; `capture_macos` below preflights through the same path.
+pub use ghost_permissions::{request_screen_recording, screen_recording_granted};
 
 #[cfg(target_os = "macos")]
 pub struct MacOSScreenCapture { displays: Vec<DisplayInfo> }
@@ -209,19 +200,76 @@ impl ScreenCapture for MacOSScreenCapture {
 
 #[cfg(target_os = "macos")]
 fn capture_macos(display_id: u32) -> Result<Frame> {
-    use macos_ffi::*;
-    unsafe {
-        let img = CGDisplayCreateImage(display_id);
-        if img.is_null() { return Err(anyhow::anyhow!("CGDisplayCreateImage null")); }
-        let w = CGImageGetWidth(img) as u32; let h = CGImageGetHeight(img) as u32;
-        let provider = CGImageGetDataProvider(img);
-        let cf_data = CGDataProviderCopyData(provider);
-        if cf_data.is_null() { CFRelease(img); return Err(anyhow::anyhow!("CGDataProviderCopyData null")); }
-        let len = CFDataGetLength(cf_data) as usize;
-        let data = std::slice::from_raw_parts(CFDataGetBytePtr(cf_data), len).to_vec();
-        CFRelease(cf_data); CFRelease(img);
-        Ok(Frame { display_id, width: w, height: h, data, timestamp: now_us() })
+    // Screen Recording is the usual reason a capture comes back empty. Check the
+    // grant up front and, when missing, trigger the system prompt (which also
+    // registers this binary in System Settings) and return an actionable error.
+    // The grant applies on restart.
+    if !screen_recording_granted() {
+        request_screen_recording();
+        return Err(anyhow::anyhow!(
+            "Screen Recording permission denied. A system prompt was requested — enable \
+             Ghost under System Settings > Privacy & Security > Screen Recording, then \
+             restart the Ghost MCP server (it must be relaunched for the grant to apply)."
+        ));
     }
+    // `CGDisplayCreateImage` was deprecated in macOS 14 and returns NULL on macOS
+    // 15+/Tahoe even with Screen Recording granted. Capture via Apple's
+    // `screencapture` CLI instead, which uses the modern (ScreenCaptureKit-backed)
+    // path and works across macOS versions.
+    capture_via_screencapture(display_id)
+}
+
+/// Map a CGDirectDisplayID to the 1-based index `screencapture -D` expects, or
+/// `None` to let `screencapture` capture the main display (the `display_id == 0`
+/// sentinel used by the quick one-shot path).
+#[cfg(target_os = "macos")]
+fn screencapture_display_index(display_id: u32) -> Option<u32> {
+    if display_id == 0 {
+        return None;
+    }
+    use core_graphics::display::CGDisplay;
+    let ids = CGDisplay::active_displays().ok()?;
+    ids.iter()
+        .position(|&id| id == display_id)
+        .map(|p| (p as u32) + 1)
+}
+
+#[cfg(target_os = "macos")]
+fn capture_via_screencapture(display_id: u32) -> Result<Frame> {
+    use std::process::Command;
+    let tmp = std::env::temp_dir().join(format!("ghost-capture-{display_id}-{}.png", now_us()));
+    let mut cmd = Command::new("/usr/sbin/screencapture");
+    // -x: no capture sound; -t png: PNG output.
+    cmd.arg("-x").arg("-t").arg("png");
+    if let Some(idx) = screencapture_display_index(display_id) {
+        cmd.arg("-D").arg(idx.to_string());
+    }
+    cmd.arg(&tmp);
+    let status = cmd
+        .status()
+        .map_err(|e| anyhow::anyhow!("failed to spawn /usr/sbin/screencapture: {e}"))?;
+    if !status.success() {
+        return Err(anyhow::anyhow!("screencapture exited with status {status}"));
+    }
+    let bytes = std::fs::read(&tmp)
+        .map_err(|e| anyhow::anyhow!("failed to read screencapture output: {e}"))?;
+    let _ = std::fs::remove_file(&tmp);
+    if bytes.is_empty() {
+        return Err(anyhow::anyhow!(
+            "screencapture produced an empty image (Screen Recording may be denied for the \
+             responsible process; restart the Ghost MCP server after granting it)"
+        ));
+    }
+    // Decode PNG -> RGBA8, then swap to the BGRA the Frame contract expects.
+    let img = image::load_from_memory(&bytes)
+        .map_err(|e| anyhow::anyhow!("failed to decode screencapture PNG: {e}"))?
+        .to_rgba8();
+    let (width, height) = (img.width(), img.height());
+    let mut data = img.into_raw();
+    for px in data.chunks_exact_mut(4) {
+        px.swap(0, 2);
+    }
+    Ok(Frame { display_id, width, height, data, timestamp: now_us() })
 }
 
 // ─── Linux ────────────────────────────────────────────────────────────────────

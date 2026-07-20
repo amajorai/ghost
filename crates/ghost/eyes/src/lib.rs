@@ -6,7 +6,7 @@ pub mod input;
 pub mod screen;
 pub mod window;
 
-pub use accessibility::{AXTree, AXTreeNode, Bounds, PlatformAXTree};
+pub use accessibility::{AXTree, AXTreeNode, Bounds, PlatformAXTree, accessibility_granted, request_accessibility};
 pub use input::{InputEvent, InputMonitor, PlatformInputMonitor};
-pub use screen::{DisplayInfo, Frame, PlatformScreenCapture, ScreenCapture, quick_screenshot, get_primary_display_size};
+pub use screen::{DisplayInfo, Frame, PlatformScreenCapture, ScreenCapture, quick_screenshot, get_primary_display_size, screen_recording_granted, request_screen_recording};
 pub use window::{AppInfo, PlatformWindowTracker, WindowInfo, WindowTracker};

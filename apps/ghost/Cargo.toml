@@ -1,6 +1,6 @@
 [package]
 name = "ghost"
-version = "0.0.1"
+version = "0.0.8"
 edition = "2021"
 
 [[bin]]
@@ -8,9 +8,10 @@ name = "ghost"
 path = "src/main.rs"
 
 [dependencies]
-ghost-core  = { path = "../../crates/ghost-core" }
-ghost-eyes  = { path = "../../crates/ghost-eyes" }
-ghost-hands = { path = "../../crates/ghost-hands" }
+ghost-core  = { path = "../../crates/ghost/core" }
+ghost-eyes  = { path = "../../crates/ghost/eyes" }
+ghost-hands = { path = "../../crates/ghost/hands" }
+ghost-permissions = { path = "../../crates/ghost/permissions" }
 
 tokio      = { version = "1", features = ["full"] }
 serde      = { version = "1", features = ["derive"] }

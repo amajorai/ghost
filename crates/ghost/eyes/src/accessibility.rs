@@ -181,6 +181,12 @@ pub use windows_impl::WindowsAXTree;
 
 // ─── macOS ────────────────────────────────────────────────────────────────────
 
+// Accessibility permission lives in the shared `ghost-permissions` crate (single
+// source of truth across the desktop app, CLI, Core, and this sidecar).
+// Re-exported so existing `ghost_eyes::accessibility_granted` call sites keep
+// working.
+pub use ghost_permissions::{accessibility_granted, request_accessibility};
+
 #[cfg(target_os = "macos")]
 mod macos_ax {
     use super::*;
