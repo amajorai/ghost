@@ -65,7 +65,13 @@ impl Snapshot {
         let id = format!("s{now_ms}-{seq}");
         let mut counter: u32 = 0;
         let tree = build_node(root, &mut counter);
-        Self { id, app, pid, created_ms: now_ms, tree }
+        Self {
+            id,
+            app,
+            pid,
+            created_ms: now_ms,
+            tree,
+        }
     }
 
     /// The total number of refs assigned in this snapshot.
@@ -112,7 +118,11 @@ fn build_node(node: &AXTreeNode, counter: &mut u32) -> SkeletonNode {
     } else {
         None
     };
-    let children = node.children.iter().map(|c| build_node(c, counter)).collect();
+    let children = node
+        .children
+        .iter()
+        .map(|c| build_node(c, counter))
+        .collect();
     SkeletonNode {
         ref_id,
         role: node.role.clone(),
@@ -163,13 +173,19 @@ fn render_inner(node: &SkeletonNode, depth: u32, max_depth: u32) -> Value {
         obj.insert("value".into(), json!(v));
     }
     if let Some(b) = &node.bounds {
-        obj.insert("bounds".into(), json!({ "x": b.x, "y": b.y, "w": b.width, "h": b.height }));
+        obj.insert(
+            "bounds".into(),
+            json!({ "x": b.x, "y": b.y, "w": b.width, "h": b.height }),
+        );
     }
     if !node.children.is_empty() {
         obj.insert("children_count".into(), json!(node.children.len()));
         if depth < max_depth {
-            let kids: Vec<Value> =
-                node.children.iter().map(|c| render_inner(c, depth + 1, max_depth)).collect();
+            let kids: Vec<Value> = node
+                .children
+                .iter()
+                .map(|c| render_inner(c, depth + 1, max_depth))
+                .collect();
             obj.insert("children".into(), json!(kids));
         }
     }
@@ -275,8 +291,8 @@ impl SnapshotStore {
     /// Load a snapshot by id.
     pub fn load(&self, id: &str) -> Result<Snapshot> {
         let path = self.dir.join(format!("{id}.json"));
-        let data = std::fs::read_to_string(&path)
-            .with_context(|| format!("Snapshot '{id}' not found"))?;
+        let data =
+            std::fs::read_to_string(&path).with_context(|| format!("Snapshot '{id}' not found"))?;
         serde_json::from_str(&data).with_context(|| format!("Invalid snapshot JSON in {id}"))
     }
 
@@ -313,7 +329,12 @@ mod tests {
     use ghost_eyes::{AXTreeNode, Bounds};
     use serde_json::json;
 
-    fn node(role: &str, title: Option<&str>, bounds: Option<Bounds>, children: Vec<AXTreeNode>) -> AXTreeNode {
+    fn node(
+        role: &str,
+        title: Option<&str>,
+        bounds: Option<Bounds>,
+        children: Vec<AXTreeNode>,
+    ) -> AXTreeNode {
         AXTreeNode {
             role: role.into(),
             title: title.map(|s| s.into()),
@@ -328,7 +349,12 @@ mod tests {
     }
 
     fn bounds(x: i32, y: i32, w: u32, h: u32) -> Bounds {
-        Bounds { x, y, width: w, height: h }
+        Bounds {
+            x,
+            y,
+            width: w,
+            height: h,
+        }
     }
 
     fn sample() -> AXTreeNode {
@@ -337,11 +363,26 @@ mod tests {
             Some("Main"),
             Some(bounds(0, 0, 800, 600)),
             vec![
-                node("group", None, None, vec![
-                    node("button", Some("Send"), Some(bounds(10, 20, 80, 30)), vec![]),
-                    node("button", Some("Cancel"), Some(bounds(100, 20, 80, 30)), vec![]),
-                ]),
-                node("textfield", Some("Search"), Some(bounds(10, 100, 200, 24)), vec![]),
+                node(
+                    "group",
+                    None,
+                    None,
+                    vec![
+                        node("button", Some("Send"), Some(bounds(10, 20, 80, 30)), vec![]),
+                        node(
+                            "button",
+                            Some("Cancel"),
+                            Some(bounds(100, 20, 80, 30)),
+                            vec![],
+                        ),
+                    ],
+                ),
+                node(
+                    "textfield",
+                    Some("Search"),
+                    Some(bounds(10, 100, 200, 24)),
+                    vec![],
+                ),
             ],
         )
     }
@@ -364,7 +405,10 @@ mod tests {
         let snap = Snapshot::build(&sample(), None, 1, 1000);
         let shallow = render(&snap.tree, 0);
         assert_eq!(shallow["children_count"], json!(2));
-        assert!(shallow.get("children").is_none(), "depth 0 must not emit children");
+        assert!(
+            shallow.get("children").is_none(),
+            "depth 0 must not emit children"
+        );
         let deep = render(&snap.tree, 3);
         assert!(deep["children"].is_array());
     }
@@ -387,7 +431,12 @@ mod tests {
             "window",
             Some("Main"),
             None,
-            vec![node("button", Some("Send"), Some(bounds(200, 200, 80, 30)), vec![])],
+            vec![node(
+                "button",
+                Some("Send"),
+                Some(bounds(200, 200, 80, 30)),
+                vec![],
+            )],
         );
         match reidentify(&moved, send) {
             Resolved::At { x, y } => assert_eq!((x, y), (240, 215)),
@@ -399,7 +448,17 @@ mod tests {
     fn reidentify_stale_when_absent() {
         let snap = Snapshot::build(&sample(), None, 1, 1000);
         let send = snap.find_ref("@e2").unwrap();
-        let other = node("window", Some("Other"), None, vec![node("button", Some("Quit"), Some(bounds(0, 0, 10, 10)), vec![])]);
+        let other = node(
+            "window",
+            Some("Other"),
+            None,
+            vec![node(
+                "button",
+                Some("Quit"),
+                Some(bounds(0, 0, 10, 10)),
+                vec![],
+            )],
+        );
         assert!(matches!(reidentify(&other, send), Resolved::Stale(_)));
     }
 

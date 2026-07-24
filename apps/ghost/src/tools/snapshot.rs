@@ -31,9 +31,9 @@ pub async fn ghost_snapshot(params: Value) -> Result<Value> {
             Some(id) => store.load(id)?,
             None => store.load_latest()?,
         };
-        let node = snapshot.find_ref(ref_id).ok_or_else(|| {
-            anyhow::anyhow!("ref {ref_id} not found in snapshot {}", snapshot.id)
-        })?;
+        let node = snapshot
+            .find_ref(ref_id)
+            .ok_or_else(|| anyhow::anyhow!("ref {ref_id} not found in snapshot {}", snapshot.id))?;
         return Ok(json!({
             "snapshot_id": snapshot.id,
             "root": ref_id,
@@ -84,7 +84,11 @@ pub async fn resolve_ref(ref_id: &str) -> Result<(i32, i32)> {
     }
 
     let tracker = PlatformWindowTracker::new()?;
-    let cur_pid = tracker.get_active_window().await.map(|w| w.pid).unwrap_or(0);
+    let cur_pid = tracker
+        .get_active_window()
+        .await
+        .map(|w| w.pid)
+        .unwrap_or(0);
     if snapshot.pid != 0 && cur_pid != 0 && cur_pid != snapshot.pid {
         anyhow::bail!(
             "STALE_REF: the focused app changed (snapshot pid {}, now {}); re-run ghost_snapshot",

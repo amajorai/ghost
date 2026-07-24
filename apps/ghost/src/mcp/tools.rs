@@ -376,3 +376,92 @@ fn tool_rich(name: &str, description: &str, schema: Value) -> Value {
         "inputSchema": schema,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn there_are_thirty_one_tool_definitions() {
+        assert_eq!(definitions().len(), 31);
+    }
+
+    #[test]
+    fn every_tool_name_is_unique() {
+        let defs = definitions();
+        let names: HashSet<&str> = defs
+            .iter()
+            .map(|d| d["name"].as_str().expect("name is a string"))
+            .collect();
+        assert_eq!(names.len(), defs.len(), "duplicate tool name detected");
+    }
+
+    #[test]
+    fn every_tool_is_well_formed() {
+        for d in definitions() {
+            let name = d["name"].as_str().expect("name");
+            assert!(name.starts_with("ghost_"), "bad name: {name}");
+            assert!(
+                d["description"].as_str().is_some_and(|s| !s.is_empty()),
+                "{name}: description must be a non-empty string"
+            );
+            let schema = &d["inputSchema"];
+            assert_eq!(
+                schema["type"], "object",
+                "{name}: inputSchema.type must be object"
+            );
+            assert!(
+                schema["properties"].is_object(),
+                "{name}: inputSchema.properties must be an object"
+            );
+        }
+    }
+
+    #[test]
+    fn required_fields_reference_declared_properties() {
+        for d in definitions() {
+            let name = d["name"].as_str().unwrap();
+            let schema = &d["inputSchema"];
+            let Some(required) = schema["required"].as_array() else {
+                continue; // no required block
+            };
+            let props = schema["properties"].as_object().unwrap();
+            for req in required {
+                let key = req.as_str().expect("required entry is a string");
+                assert!(
+                    props.contains_key(key),
+                    "{name}: required '{key}' is not a declared property"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tool_helper_builds_required_array_only_when_nonempty() {
+        let with_required = tool("ghost_x", "desc", &[("a", "string", "the a", true)], &["a"]);
+        assert_eq!(with_required["inputSchema"]["required"], json!(["a"]));
+
+        let without = tool("ghost_y", "desc", &[("a", "string", "the a", false)], &[]);
+        assert!(
+            without["inputSchema"].get("required").is_none(),
+            "empty required must be omitted, not an empty array"
+        );
+    }
+
+    #[test]
+    fn known_perception_and_action_tools_are_present() {
+        let defs = definitions();
+        let names: HashSet<&str> = defs.iter().map(|d| d["name"].as_str().unwrap()).collect();
+        for expected in [
+            "ghost_context",
+            "ghost_click",
+            "ghost_type",
+            "ghost_snapshot",
+            "ghost_recipes",
+            "ghost_learn_start",
+        ] {
+            assert!(names.contains(expected), "missing tool: {expected}");
+        }
+    }
+}

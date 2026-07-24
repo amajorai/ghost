@@ -7,7 +7,10 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
 
 use ghost_core::learning::{LearnedEvent, LearningSession, SessionStatus};
-use ghost_eyes::{AXTree, InputEvent, InputMonitor, PlatformAXTree, PlatformInputMonitor, PlatformWindowTracker, WindowTracker};
+use ghost_eyes::{
+    AXTree, InputEvent, InputMonitor, PlatformAXTree, PlatformInputMonitor, PlatformWindowTracker,
+    WindowTracker,
+};
 
 use super::str_param;
 
@@ -22,12 +25,15 @@ fn session() -> &'static Arc<LearningSession> {
 pub async fn ghost_learn_start(params: Value) -> Result<Value> {
     let task_desc = str_param(&params, "task_description").map(|s| s.to_string());
 
-    session().start(task_desc.clone())
+    session()
+        .start(task_desc.clone())
         .map_err(|e| anyhow::anyhow!(e))?;
 
     // Start the input monitor
     let monitor_cell = MONITOR.get_or_init(|| {
-        Arc::new(Mutex::new(PlatformInputMonitor::new().expect("InputMonitor")))
+        Arc::new(Mutex::new(
+            PlatformInputMonitor::new().expect("InputMonitor"),
+        ))
     });
 
     let session_ref = Arc::clone(session());
@@ -186,7 +192,10 @@ pub async fn ghost_learn_stop(_params: Value) -> Result<Value> {
         let _ = mon.lock().await.stop().await;
     }
 
-    let event_values: Vec<Value> = events.iter().map(|e| serde_json::to_value(e).unwrap_or_default()).collect();
+    let event_values: Vec<Value> = events
+        .iter()
+        .map(|e| serde_json::to_value(e).unwrap_or_default())
+        .collect();
     Ok(json!({
         "recording": false,
         "event_count": event_values.len(),
@@ -211,16 +220,15 @@ async fn raw_to_learned(event: &InputEvent, elapsed_secs: u64) -> Option<Learned
     match event {
         InputEvent::MouseDown { x, y, button } => {
             // Enrich with AX element at click coordinates
-            let (element_role, element_name, element_id) =
-                if let Ok(ax) = PlatformAXTree::new() {
-                    if let Some(node) = ax.element_at(*x, *y).await {
-                        (Some(node.role), node.title, node.identifier)
-                    } else {
-                        (None, None, None)
-                    }
+            let (element_role, element_name, element_id) = if let Ok(ax) = PlatformAXTree::new() {
+                if let Some(node) = ax.element_at(*x, *y).await {
+                    (Some(node.role), node.title, node.identifier)
                 } else {
                     (None, None, None)
-                };
+                }
+            } else {
+                (None, None, None)
+            };
 
             // Enrich with app name from window tracker
             let app_name = if let Ok(tracker) = PlatformWindowTracker::new() {
@@ -232,9 +240,13 @@ async fn raw_to_learned(event: &InputEvent, elapsed_secs: u64) -> Option<Learned
             Some(LearnedEvent {
                 ts_ms,
                 event_type: format!("click.button{button}"),
-                x: Some(*x), y: Some(*y),
+                x: Some(*x),
+                y: Some(*y),
                 key: None,
-                element_role, element_name, element_id, app_name,
+                element_role,
+                element_name,
+                element_id,
+                app_name,
             })
         }
         _ => None, // KeyDown handled by coalescer; Scroll handled by accumulator; others skipped
@@ -248,7 +260,7 @@ fn vk_to_char(vk: u32) -> Option<char> {
     match vk {
         65..=90 => Some((b'a' + (vk - 65) as u8) as char), // A-Z → a-z
         48..=57 => Some((b'0' + (vk - 48) as u8) as char), // 0-9
-        32  => Some(' '),
+        32 => Some(' '),
         // OEM punctuation keys (US layout, unshifted)
         186 => Some(';'),
         187 => Some('='),
@@ -268,8 +280,8 @@ fn vk_to_char(vk: u32) -> Option<char> {
 /// Convert a VK code to a named key string for press events.
 fn vk_to_key_name(vk: u32) -> Option<&'static str> {
     match vk {
-        8  => Some("backspace"),
-        9  => Some("tab"),
+        8 => Some("backspace"),
+        9 => Some("tab"),
         13 => Some("return"),
         27 => Some("escape"),
         33 => Some("pageup"),
@@ -294,6 +306,124 @@ fn vk_to_key_name(vk: u32) -> Option<&'static str> {
         121 => Some("f10"),
         122 => Some("f11"),
         123 => Some("f12"),
-        _  => None,
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vk_to_char_maps_letters_to_lowercase() {
+        assert_eq!(vk_to_char(65), Some('a')); // 'A' VK
+        assert_eq!(vk_to_char(90), Some('z')); // 'Z' VK
+    }
+
+    #[test]
+    fn vk_to_char_maps_digits_and_space() {
+        assert_eq!(vk_to_char(48), Some('0'));
+        assert_eq!(vk_to_char(57), Some('9'));
+        assert_eq!(vk_to_char(32), Some(' '));
+    }
+
+    #[test]
+    fn vk_to_char_maps_oem_punctuation() {
+        assert_eq!(vk_to_char(186), Some(';'));
+        assert_eq!(vk_to_char(187), Some('='));
+        assert_eq!(vk_to_char(188), Some(','));
+        assert_eq!(vk_to_char(189), Some('-'));
+        assert_eq!(vk_to_char(190), Some('.'));
+        assert_eq!(vk_to_char(191), Some('/'));
+        assert_eq!(vk_to_char(192), Some('`'));
+        assert_eq!(vk_to_char(219), Some('['));
+        assert_eq!(vk_to_char(220), Some('\\'));
+        assert_eq!(vk_to_char(221), Some(']'));
+        assert_eq!(vk_to_char(222), Some('\''));
+    }
+
+    #[test]
+    fn vk_to_char_returns_none_for_control_and_unmapped_codes() {
+        // Control keys (backspace, tab, return, escape) are not printable chars.
+        assert_eq!(vk_to_char(8), None);
+        assert_eq!(vk_to_char(9), None);
+        assert_eq!(vk_to_char(13), None);
+        assert_eq!(vk_to_char(27), None);
+        // Arbitrary unmapped code.
+        assert_eq!(vk_to_char(255), None);
+    }
+
+    #[test]
+    fn vk_to_key_name_maps_named_keys() {
+        assert_eq!(vk_to_key_name(8), Some("backspace"));
+        assert_eq!(vk_to_key_name(9), Some("tab"));
+        assert_eq!(vk_to_key_name(13), Some("return"));
+        assert_eq!(vk_to_key_name(27), Some("escape"));
+        assert_eq!(vk_to_key_name(37), Some("left"));
+        assert_eq!(vk_to_key_name(38), Some("up"));
+        assert_eq!(vk_to_key_name(39), Some("right"));
+        assert_eq!(vk_to_key_name(40), Some("down"));
+        assert_eq!(vk_to_key_name(46), Some("delete"));
+    }
+
+    #[test]
+    fn vk_to_key_name_maps_function_keys() {
+        assert_eq!(vk_to_key_name(112), Some("f1"));
+        assert_eq!(vk_to_key_name(123), Some("f12"));
+    }
+
+    #[test]
+    fn vk_to_key_name_returns_none_for_printable_and_unmapped() {
+        // 'A' is printable, not a named key.
+        assert_eq!(vk_to_key_name(65), None);
+        assert_eq!(vk_to_key_name(200), None);
+    }
+
+    #[tokio::test]
+    async fn raw_to_learned_ignores_non_mousedown_events() {
+        // Only MouseDown is enriched into a LearnedEvent (and that path needs AX);
+        // every other input variant returns None without touching the AX tree.
+        assert!(raw_to_learned(&InputEvent::KeyDown { vk_code: 65 }, 0)
+            .await
+            .is_none());
+        assert!(raw_to_learned(&InputEvent::KeyUp { vk_code: 65 }, 1)
+            .await
+            .is_none());
+        assert!(raw_to_learned(
+            &InputEvent::MouseUp {
+                x: 1,
+                y: 2,
+                button: 0
+            },
+            2
+        )
+        .await
+        .is_none());
+        assert!(raw_to_learned(&InputEvent::MouseMove { x: 3, y: 4 }, 3)
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn learn_status_reports_idle_session_fields() {
+        // Reading status touches only the process-global session (no monitor start,
+        // no AX). Recording is false until ghost_learn_start runs.
+        let out = ghost_learn_status(json!({})).await.expect("status ok");
+        assert_eq!(out["recording"], json!(false));
+        assert!(out["event_count"].is_number());
+        assert!(out["elapsed_secs"].is_number());
+        assert!(out.get("status").is_some());
+    }
+
+    #[test]
+    fn char_and_name_tables_are_disjoint() {
+        // No VK code should resolve to both a printable char and a named key —
+        // the coalescer branches on char-first, so overlap would drop keys.
+        for vk in 0u32..256 {
+            assert!(
+                !(vk_to_char(vk).is_some() && vk_to_key_name(vk).is_some()),
+                "VK {vk} maps to both a char and a key name"
+            );
+        }
     }
 }

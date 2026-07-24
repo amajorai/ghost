@@ -91,3 +91,56 @@ async fn dispatch_inner(tool_name: &str, params: Value) -> Result<Value> {
         _ => Err(anyhow::anyhow!("Unknown tool: {tool_name}")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn input_actions_are_exactly_the_synthetic_input_tools() {
+        let expected = [
+            "ghost_click",
+            "ghost_type",
+            "ghost_press",
+            "ghost_hotkey",
+            "ghost_scroll",
+            "ghost_hover",
+            "ghost_long_press",
+            "ghost_drag",
+        ];
+        for name in expected {
+            assert!(
+                is_input_action(name),
+                "{name} should require the action lock"
+            );
+        }
+    }
+
+    #[test]
+    fn read_only_and_unknown_tools_are_not_input_actions() {
+        for name in [
+            "ghost_context",
+            "ghost_find",
+            "ghost_screenshot",
+            "ghost_focus", // focus is coarse; intentionally not lock-guarded
+            "ghost_window",
+            "ghost_recipes",
+            "ghost_wait",
+            "totally_unknown",
+            "",
+        ] {
+            assert!(
+                !is_input_action(name),
+                "{name} must not require the action lock"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_unknown_tool_errors_with_name() {
+        let err = dispatch("ghost_does_not_exist", serde_json::json!({}))
+            .await
+            .expect_err("unknown tool must error");
+        assert_eq!(err.to_string(), "Unknown tool: ghost_does_not_exist");
+    }
+}

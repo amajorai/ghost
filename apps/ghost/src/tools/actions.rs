@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde_json::{json, Value};
 
-use ghost_eyes::{PlatformAXTree, AXTree};
+use ghost_eyes::{AXTree, PlatformAXTree};
 use ghost_hands::{
     execute_click, execute_drag, focus_app, hover, long_press, mouse_click, plan_click, press_key,
     scroll, send_hotkey, type_text, window_action, ClickMode, MouseButton, WindowAction,
@@ -29,9 +29,12 @@ pub async fn ghost_click(params: Value) -> Result<Value> {
         let count = int_param(&params, "count", 1) as u32;
         let plan = plan_click(mode, false, false);
         overlay_events::press_start(x, y, "ghost_click");
-        let via = tokio::task::spawn_blocking(move || execute_click(x, y, button, count, plan)).await??;
+        let via =
+            tokio::task::spawn_blocking(move || execute_click(x, y, button, count, plan)).await??;
         overlay_events::press_end(x, y, "ghost_click");
-        return Ok(json!({ "success": true, "x": x, "y": y, "ref": r, "method": "ref", "via": via }));
+        return Ok(
+            json!({ "success": true, "x": x, "y": y, "ref": r, "method": "ref", "via": via }),
+        );
     }
 
     // If x/y given, use coordinates directly
@@ -40,7 +43,10 @@ pub async fn ghost_click(params: Value) -> Result<Value> {
         let count = int_param(&params, "count", 1) as u32;
         let plan = plan_click(mode, false, true);
         overlay_events::press_start(x as i32, y as i32, "ghost_click");
-        let via = tokio::task::spawn_blocking(move || execute_click(x as i32, y as i32, button, count, plan)).await??;
+        let via = tokio::task::spawn_blocking(move || {
+            execute_click(x as i32, y as i32, button, count, plan)
+        })
+        .await??;
         overlay_events::press_end(x as i32, y as i32, "ghost_click");
         return Ok(json!({ "success": true, "x": x, "y": y, "method": "coordinates", "via": via }));
     }
@@ -53,15 +59,21 @@ pub async fn ghost_click(params: Value) -> Result<Value> {
             if let Ok(results) = ghost_core::cdp::find_elements(&selector).await {
                 if let Some(el) = results.first() {
                     let (win_x, win_y) = chrome_window_origin();
-                    let (sx, sy) = ghost_core::cdp::viewport_to_screen(el.center_x, el.center_y, win_x, win_y);
+                    let (sx, sy) =
+                        ghost_core::cdp::viewport_to_screen(el.center_x, el.center_y, win_x, win_y);
                     let button = str_to_button(str_param(&params, "button").unwrap_or("left"));
                     let count = int_param(&params, "count", 1) as u32;
                     let text = el.text.clone();
                     let plan = plan_click(mode, false, false);
                     overlay_events::press_start(sx, sy, "ghost_click");
-                    let via = tokio::task::spawn_blocking(move || execute_click(sx, sy, button, count, plan)).await??;
+                    let via = tokio::task::spawn_blocking(move || {
+                        execute_click(sx, sy, button, count, plan)
+                    })
+                    .await??;
                     overlay_events::press_end(sx, sy, "ghost_click");
-                    return Ok(json!({ "success": true, "x": sx, "y": sy, "element": text, "method": "cdp_dom_id", "via": via }));
+                    return Ok(
+                        json!({ "success": true, "x": sx, "y": sy, "element": text, "method": "cdp_dom_id", "via": via }),
+                    );
                 }
             }
         }
@@ -75,15 +87,21 @@ pub async fn ghost_click(params: Value) -> Result<Value> {
             if let Ok(results) = ghost_core::cdp::find_elements(&selector).await {
                 if let Some(el) = results.first() {
                     let (win_x, win_y) = chrome_window_origin();
-                    let (sx, sy) = ghost_core::cdp::viewport_to_screen(el.center_x, el.center_y, win_x, win_y);
+                    let (sx, sy) =
+                        ghost_core::cdp::viewport_to_screen(el.center_x, el.center_y, win_x, win_y);
                     let button = str_to_button(str_param(&params, "button").unwrap_or("left"));
                     let count = int_param(&params, "count", 1) as u32;
                     let text = el.text.clone();
                     let plan = plan_click(mode, false, false);
                     overlay_events::press_start(sx, sy, "ghost_click");
-                    let via = tokio::task::spawn_blocking(move || execute_click(sx, sy, button, count, plan)).await??;
+                    let via = tokio::task::spawn_blocking(move || {
+                        execute_click(sx, sy, button, count, plan)
+                    })
+                    .await??;
                     overlay_events::press_end(sx, sy, "ghost_click");
-                    return Ok(json!({ "success": true, "x": sx, "y": sy, "element": text, "method": "cdp_dom_class", "via": via }));
+                    return Ok(
+                        json!({ "success": true, "x": sx, "y": sy, "element": text, "method": "cdp_dom_class", "via": via }),
+                    );
                 }
             }
         }
@@ -102,9 +120,13 @@ pub async fn ghost_click(params: Value) -> Result<Value> {
             // cursor warp); the physical-click fallback keeps the cursor courteous.
             let plan = plan_click(mode, true, false);
             overlay_events::press_start(cx, cy, "ghost_click");
-            let via = tokio::task::spawn_blocking(move || execute_click(cx, cy, button, count, plan)).await??;
+            let via =
+                tokio::task::spawn_blocking(move || execute_click(cx, cy, button, count, plan))
+                    .await??;
             overlay_events::press_end(cx, cy, "ghost_click");
-            return Ok(json!({ "success": true, "x": cx, "y": cy, "element": el.title, "method": "ax_query", "via": via }));
+            return Ok(
+                json!({ "success": true, "x": cx, "y": cy, "element": el.title, "method": "ax_query", "via": via }),
+            );
         }
     }
 
@@ -113,14 +135,19 @@ pub async fn ghost_click(params: Value) -> Result<Value> {
         if let Ok(results) = ghost_core::cdp::find_elements(query).await {
             if let Some(el) = results.first() {
                 let (win_x, win_y) = chrome_window_origin();
-                let (sx, sy) = ghost_core::cdp::viewport_to_screen(el.center_x, el.center_y, win_x, win_y);
+                let (sx, sy) =
+                    ghost_core::cdp::viewport_to_screen(el.center_x, el.center_y, win_x, win_y);
                 let button = str_to_button(str_param(&params, "button").unwrap_or("left"));
                 let count = int_param(&params, "count", 1) as u32;
                 let plan = plan_click(mode, false, false);
                 overlay_events::press_start(sx, sy, "ghost_click");
-                let via = tokio::task::spawn_blocking(move || execute_click(sx, sy, button, count, plan)).await??;
+                let via =
+                    tokio::task::spawn_blocking(move || execute_click(sx, sy, button, count, plan))
+                        .await??;
                 overlay_events::press_end(sx, sy, "ghost_click");
-                return Ok(json!({ "success": true, "x": sx, "y": sy, "element": el.text, "method": "cdp", "via": via }));
+                return Ok(
+                    json!({ "success": true, "x": sx, "y": sy, "element": el.text, "method": "cdp", "via": via }),
+                );
             }
         }
     }
@@ -129,9 +156,11 @@ pub async fn ghost_click(params: Value) -> Result<Value> {
 }
 
 pub async fn ghost_type(params: Value) -> Result<Value> {
-    let text = params["text"].as_str().ok_or_else(|| anyhow::anyhow!("'text' required"))?;
-    let into  = str_param(&params, "into");
-    let app   = str_param(&params, "app");
+    let text = params["text"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("'text' required"))?;
+    let into = str_param(&params, "into");
+    let app = str_param(&params, "app");
     let clear = bool_param(&params, "clear", false);
 
     if let Some(app_name) = app {
@@ -159,8 +188,10 @@ pub async fn ghost_type(params: Value) -> Result<Value> {
             if let Ok(els) = ghost_core::cdp::find_elements(&selector).await {
                 if let Some(el) = els.first() {
                     let (wx, wy) = chrome_window_origin();
-                    let (sx, sy) = ghost_core::cdp::viewport_to_screen(el.center_x, el.center_y, wx, wy);
-                    tokio::task::spawn_blocking(move || mouse_click(sx, sy, MouseButton::Left, 1)).await??;
+                    let (sx, sy) =
+                        ghost_core::cdp::viewport_to_screen(el.center_x, el.center_y, wx, wy);
+                    tokio::task::spawn_blocking(move || mouse_click(sx, sy, MouseButton::Left, 1))
+                        .await??;
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 }
             }
@@ -175,8 +206,10 @@ pub async fn ghost_type(params: Value) -> Result<Value> {
             if let Ok(els) = ghost_core::cdp::find_elements(&selector).await {
                 if let Some(el) = els.first() {
                     let (wx, wy) = chrome_window_origin();
-                    let (sx, sy) = ghost_core::cdp::viewport_to_screen(el.center_x, el.center_y, wx, wy);
-                    tokio::task::spawn_blocking(move || mouse_click(sx, sy, MouseButton::Left, 1)).await??;
+                    let (sx, sy) =
+                        ghost_core::cdp::viewport_to_screen(el.center_x, el.center_y, wx, wy);
+                    tokio::task::spawn_blocking(move || mouse_click(sx, sy, MouseButton::Left, 1))
+                        .await??;
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 }
             }
@@ -190,17 +223,24 @@ pub async fn ghost_type(params: Value) -> Result<Value> {
             if let Some(bounds) = &el.bounds {
                 let cx = bounds.x + bounds.width as i32 / 2;
                 let cy = bounds.y + bounds.height as i32 / 2;
-                tokio::task::spawn_blocking(move || mouse_click(cx, cy, MouseButton::Left, 1)).await??;
+                tokio::task::spawn_blocking(move || mouse_click(cx, cy, MouseButton::Left, 1))
+                    .await??;
                 true
-            } else { false }
-        } else { false };
+            } else {
+                false
+            }
+        } else {
+            false
+        };
 
         if !focused && ghost_core::cdp::is_available().await {
             if let Ok(els) = ghost_core::cdp::find_elements(target).await {
                 if let Some(el) = els.first() {
                     let (wx, wy) = chrome_window_origin();
-                    let (sx, sy) = ghost_core::cdp::viewport_to_screen(el.center_x, el.center_y, wx, wy);
-                    tokio::task::spawn_blocking(move || mouse_click(sx, sy, MouseButton::Left, 1)).await??;
+                    let (sx, sy) =
+                        ghost_core::cdp::viewport_to_screen(el.center_x, el.center_y, wx, wy);
+                    tokio::task::spawn_blocking(move || mouse_click(sx, sy, MouseButton::Left, 1))
+                        .await??;
                 }
             }
         }
@@ -215,7 +255,9 @@ pub async fn ghost_type(params: Value) -> Result<Value> {
 }
 
 pub async fn ghost_press(params: Value) -> Result<Value> {
-    let key = params["key"].as_str().ok_or_else(|| anyhow::anyhow!("'key' required"))?;
+    let key = params["key"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("'key' required"))?;
     let app = str_param(&params, "app");
 
     if let Some(app_name) = app {
@@ -225,14 +267,19 @@ pub async fn ghost_press(params: Value) -> Result<Value> {
 
     let modifiers: Vec<String> = params["modifiers"]
         .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
         .unwrap_or_default();
 
     let key_owned = key.to_string();
     tokio::task::spawn_blocking(move || {
         let mod_refs: Vec<&str> = modifiers.iter().map(|s| s.as_str()).collect();
         press_key(&key_owned, &mod_refs)
-    }).await??;
+    })
+    .await??;
     Ok(json!({ "success": true, "key": key }))
 }
 
@@ -253,12 +300,15 @@ pub async fn ghost_hotkey(params: Value) -> Result<Value> {
     tokio::task::spawn_blocking(move || {
         let refs: Vec<&str> = keys.iter().map(|s| s.as_str()).collect();
         send_hotkey(&refs)
-    }).await??;
+    })
+    .await??;
     Ok(json!({ "success": true, "keys": params["keys"] }))
 }
 
 pub async fn ghost_scroll(params: Value) -> Result<Value> {
-    let direction = params["direction"].as_str().ok_or_else(|| anyhow::anyhow!("'direction' required"))?;
+    let direction = params["direction"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("'direction' required"))?;
     let amount = int_param(&params, "amount", 3) as i32;
     let x = params["x"].as_f64().unwrap_or(960.0) as i32;
     let y = params["y"].as_f64().unwrap_or(540.0) as i32;
@@ -291,9 +341,12 @@ pub async fn ghost_hover(params: Value) -> Result<Value> {
             if let Ok(results) = ghost_core::cdp::find_elements(&selector).await {
                 if let Some(el) = results.first() {
                     let (win_x, win_y) = chrome_window_origin();
-                    let (sx, sy) = ghost_core::cdp::viewport_to_screen(el.center_x, el.center_y, win_x, win_y);
+                    let (sx, sy) =
+                        ghost_core::cdp::viewport_to_screen(el.center_x, el.center_y, win_x, win_y);
                     tokio::task::spawn_blocking(move || hover(sx, sy)).await??;
-                    return Ok(json!({ "success": true, "x": sx, "y": sy, "method": "cdp_dom_id" }));
+                    return Ok(
+                        json!({ "success": true, "x": sx, "y": sy, "method": "cdp_dom_id" }),
+                    );
                 }
             }
         }
@@ -307,9 +360,12 @@ pub async fn ghost_hover(params: Value) -> Result<Value> {
             if let Ok(results) = ghost_core::cdp::find_elements(&selector).await {
                 if let Some(el) = results.first() {
                     let (win_x, win_y) = chrome_window_origin();
-                    let (sx, sy) = ghost_core::cdp::viewport_to_screen(el.center_x, el.center_y, win_x, win_y);
+                    let (sx, sy) =
+                        ghost_core::cdp::viewport_to_screen(el.center_x, el.center_y, win_x, win_y);
                     tokio::task::spawn_blocking(move || hover(sx, sy)).await??;
-                    return Ok(json!({ "success": true, "x": sx, "y": sy, "method": "cdp_dom_class" }));
+                    return Ok(
+                        json!({ "success": true, "x": sx, "y": sy, "method": "cdp_dom_class" }),
+                    );
                 }
             }
         }
@@ -336,14 +392,18 @@ pub async fn ghost_hover(params: Value) -> Result<Value> {
         if let Ok(els) = ghost_core::cdp::find_elements(query).await {
             if let Some(el) = els.first() {
                 let (wx, wy) = chrome_window_origin();
-                let (sx, sy) = ghost_core::cdp::viewport_to_screen(el.center_x, el.center_y, wx, wy);
+                let (sx, sy) =
+                    ghost_core::cdp::viewport_to_screen(el.center_x, el.center_y, wx, wy);
                 tokio::task::spawn_blocking(move || hover(sx, sy)).await??;
                 return Ok(json!({ "success": true, "x": sx, "y": sy, "method": "cdp" }));
             }
         }
     }
 
-    Err(anyhow::anyhow!("Could not find element '{}'. Specify x/y coordinates instead.", query))
+    Err(anyhow::anyhow!(
+        "Could not find element '{}'. Specify x/y coordinates instead.",
+        query
+    ))
 }
 
 pub async fn ghost_long_press(params: Value) -> Result<Value> {
@@ -365,8 +425,10 @@ pub async fn ghost_long_press(params: Value) -> Result<Value> {
             if let Ok(results) = ghost_core::cdp::find_elements(&selector).await {
                 if let Some(el) = results.first() {
                     let (win_x, win_y) = chrome_window_origin();
-                    let (sx, sy) = ghost_core::cdp::viewport_to_screen(el.center_x, el.center_y, win_x, win_y);
-                    tokio::task::spawn_blocking(move || long_press(sx, sy, duration_ms, button)).await??;
+                    let (sx, sy) =
+                        ghost_core::cdp::viewport_to_screen(el.center_x, el.center_y, win_x, win_y);
+                    tokio::task::spawn_blocking(move || long_press(sx, sy, duration_ms, button))
+                        .await??;
                     return Ok(json!({ "success": true, "method": "cdp_dom_id" }));
                 }
             }
@@ -381,8 +443,10 @@ pub async fn ghost_long_press(params: Value) -> Result<Value> {
             if let Ok(results) = ghost_core::cdp::find_elements(&selector).await {
                 if let Some(el) = results.first() {
                     let (win_x, win_y) = chrome_window_origin();
-                    let (sx, sy) = ghost_core::cdp::viewport_to_screen(el.center_x, el.center_y, win_x, win_y);
-                    tokio::task::spawn_blocking(move || long_press(sx, sy, duration_ms, button)).await??;
+                    let (sx, sy) =
+                        ghost_core::cdp::viewport_to_screen(el.center_x, el.center_y, win_x, win_y);
+                    tokio::task::spawn_blocking(move || long_press(sx, sy, duration_ms, button))
+                        .await??;
                     return Ok(json!({ "success": true, "method": "cdp_dom_class" }));
                 }
             }
@@ -390,7 +454,8 @@ pub async fn ghost_long_press(params: Value) -> Result<Value> {
     }
 
     if let (Some(x), Some(y)) = (params["x"].as_f64(), params["y"].as_f64()) {
-        tokio::task::spawn_blocking(move || long_press(x as i32, y as i32, duration_ms, button)).await??;
+        tokio::task::spawn_blocking(move || long_press(x as i32, y as i32, duration_ms, button))
+            .await??;
         return Ok(json!({ "success": true }));
     }
 
@@ -404,16 +469,22 @@ pub async fn ghost_long_press(params: Value) -> Result<Value> {
             return Ok(json!({ "success": true }));
         }
     }
-    Err(anyhow::anyhow!("Specify x/y or a query to identify the target."))
+    Err(anyhow::anyhow!(
+        "Specify x/y or a query to identify the target."
+    ))
 }
 
 pub async fn ghost_drag(params: Value) -> Result<Value> {
-    let to_x = params["to_x"].as_f64().ok_or_else(|| anyhow::anyhow!("'to_x' required"))? as i32;
-    let to_y = params["to_y"].as_f64().ok_or_else(|| anyhow::anyhow!("'to_y' required"))? as i32;
+    let to_x = params["to_x"]
+        .as_f64()
+        .ok_or_else(|| anyhow::anyhow!("'to_x' required"))? as i32;
+    let to_y = params["to_y"]
+        .as_f64()
+        .ok_or_else(|| anyhow::anyhow!("'to_y' required"))? as i32;
     let duration_secs = f64_param(&params, "duration", 0.5);
-    let hold_secs     = f64_param(&params, "hold_duration", 0.1);
-    let duration_ms   = (duration_secs * 1000.0) as u64;
-    let hold_ms       = (hold_secs * 1000.0) as u64;
+    let hold_secs = f64_param(&params, "hold_duration", 0.1);
+    let duration_ms = (duration_secs * 1000.0) as u64;
+    let hold_ms = (hold_secs * 1000.0) as u64;
 
     let app = str_param(&params, "app");
     if let Some(app_name) = app {
@@ -426,30 +497,41 @@ pub async fn ghost_drag(params: Value) -> Result<Value> {
     // user did not grab the mouse mid-drag.
     let restore = !matches!(ClickMode::parse(str_param(&params, "mode")), ClickMode::Hid);
 
-    let (from_x, from_y) = if let (Some(fx), Some(fy)) = (params["from_x"].as_f64(), params["from_y"].as_f64()) {
-        (fx as i32, fy as i32)
-    } else {
-        let query = str_param(&params, "query").unwrap_or("");
-        let ax = PlatformAXTree::new()?;
-        if let Some(el) = ax.find_element(query).await {
-            if let Some(bounds) = &el.bounds {
-                (bounds.x + bounds.width as i32 / 2, bounds.y + bounds.height as i32 / 2)
-            } else {
-                return Err(anyhow::anyhow!("Element has no bounds. Specify from_x/from_y."));
-            }
+    let (from_x, from_y) =
+        if let (Some(fx), Some(fy)) = (params["from_x"].as_f64(), params["from_y"].as_f64()) {
+            (fx as i32, fy as i32)
         } else {
-            return Err(anyhow::anyhow!("Specify from_x/from_y or a query."));
-        }
-    };
+            let query = str_param(&params, "query").unwrap_or("");
+            let ax = PlatformAXTree::new()?;
+            if let Some(el) = ax.find_element(query).await {
+                if let Some(bounds) = &el.bounds {
+                    (
+                        bounds.x + bounds.width as i32 / 2,
+                        bounds.y + bounds.height as i32 / 2,
+                    )
+                } else {
+                    return Err(anyhow::anyhow!(
+                        "Element has no bounds. Specify from_x/from_y."
+                    ));
+                }
+            } else {
+                return Err(anyhow::anyhow!("Specify from_x/from_y or a query."));
+            }
+        };
 
     overlay_events::press_start(from_x, from_y, "ghost_drag");
-    tokio::task::spawn_blocking(move || execute_drag(from_x, from_y, to_x, to_y, duration_ms, hold_ms, restore)).await??;
+    tokio::task::spawn_blocking(move || {
+        execute_drag(from_x, from_y, to_x, to_y, duration_ms, hold_ms, restore)
+    })
+    .await??;
     overlay_events::press_end(to_x, to_y, "ghost_drag");
     Ok(json!({ "success": true, "from": [from_x, from_y], "to": [to_x, to_y] }))
 }
 
 pub async fn ghost_focus(params: Value) -> Result<Value> {
-    let app = params["app"].as_str().ok_or_else(|| anyhow::anyhow!("'app' required"))?;
+    let app = params["app"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("'app' required"))?;
     let window = str_param(&params, "window");
     // If a specific window title is given, try to focus it by exact title first
     if let Some(title) = window {
@@ -462,39 +544,47 @@ pub async fn ghost_focus(params: Value) -> Result<Value> {
 }
 
 pub async fn ghost_window(params: Value) -> Result<Value> {
-    let action_str = params["action"].as_str().ok_or_else(|| anyhow::anyhow!("'action' required"))?;
-    let app = params["app"].as_str().ok_or_else(|| anyhow::anyhow!("'app' required"))?;
+    let action_str = params["action"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("'action' required"))?;
+    let app = params["app"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("'app' required"))?;
     let window_title = str_param(&params, "window");
 
     let action = match action_str {
         "minimize" => WindowAction::Minimize,
         "maximize" => WindowAction::Maximize,
-        "close"    => WindowAction::Close,
-        "restore"  => WindowAction::Restore,
-        "move"     => WindowAction::Move {
+        "close" => WindowAction::Close,
+        "restore" => WindowAction::Restore,
+        "move" => WindowAction::Move {
             x: params["x"].as_f64().unwrap_or(0.0) as i32,
             y: params["y"].as_f64().unwrap_or(0.0) as i32,
         },
-        "resize"   => WindowAction::Resize {
-            width:  params["width"].as_f64().unwrap_or(800.0)  as u32,
+        "resize" => WindowAction::Resize {
+            width: params["width"].as_f64().unwrap_or(800.0) as u32,
             height: params["height"].as_f64().unwrap_or(600.0) as u32,
         },
         "list" => WindowAction::List,
-        _ => return Err(anyhow::anyhow!("Unknown action '{}'. Use: minimize, maximize, close, restore, move, resize, list.", action_str)),
+        _ => {
+            return Err(anyhow::anyhow!(
+                "Unknown action '{}'. Use: minimize, maximize, close, restore, move, resize, list.",
+                action_str
+            ))
+        }
     };
 
     let app_owned = app.to_string();
     let title_owned = window_title.map(|s| s.to_string());
-    tokio::task::spawn_blocking(move || {
-        window_action(&action, &app_owned, title_owned.as_deref())
-    }).await?
+    tokio::task::spawn_blocking(move || window_action(&action, &app_owned, title_owned.as_deref()))
+        .await?
 }
 
 fn str_to_button(s: &str) -> MouseButton {
     match s {
-        "right"  => MouseButton::Right,
+        "right" => MouseButton::Right,
         "middle" => MouseButton::Middle,
-        _        => MouseButton::Left,
+        _ => MouseButton::Left,
     }
 }
 
@@ -503,9 +593,9 @@ fn str_to_button(s: &str) -> MouseButton {
 fn chrome_window_origin() -> (i32, i32) {
     #[cfg(target_os = "windows")]
     {
+        use windows::core::w;
         use windows::Win32::Foundation::RECT;
         use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowRect};
-        use windows::core::w;
         unsafe {
             if let Ok(hwnd) = FindWindowW(w!("Chrome_WidgetWin_1"), windows::core::PCWSTR::null()) {
                 if !hwnd.0.is_null() {
@@ -517,4 +607,82 @@ fn chrome_window_origin() -> (i32, i32) {
         }
     }
     (0, 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn str_to_button_maps_known_names_and_defaults_to_left() {
+        assert!(matches!(str_to_button("right"), MouseButton::Right));
+        assert!(matches!(str_to_button("middle"), MouseButton::Middle));
+        assert!(matches!(str_to_button("left"), MouseButton::Left));
+        // Anything unrecognized falls back to left.
+        assert!(matches!(str_to_button("garbage"), MouseButton::Left));
+        assert!(matches!(str_to_button(""), MouseButton::Left));
+    }
+
+    // The action handlers validate required params BEFORE touching the accessibility
+    // tree or focusing an app, so these error paths are hermetic (no `app` passed, so
+    // no `focus_app` OS call is reached).
+
+    #[tokio::test]
+    async fn ghost_type_requires_text() {
+        let err = ghost_type(json!({})).await.expect_err("text is required");
+        assert!(err.to_string().contains("'text' required"));
+    }
+
+    #[tokio::test]
+    async fn ghost_press_requires_key() {
+        let err = ghost_press(json!({})).await.expect_err("key is required");
+        assert!(err.to_string().contains("'key' required"));
+    }
+
+    #[tokio::test]
+    async fn ghost_hotkey_requires_keys_array() {
+        let err = ghost_hotkey(json!({})).await.expect_err("keys is required");
+        assert!(err.to_string().contains("'keys' required"));
+    }
+
+    #[tokio::test]
+    async fn ghost_scroll_requires_direction() {
+        let err = ghost_scroll(json!({}))
+            .await
+            .expect_err("direction is required");
+        assert!(err.to_string().contains("'direction' required"));
+    }
+
+    #[tokio::test]
+    async fn ghost_drag_requires_to_coordinates() {
+        let err = ghost_drag(json!({})).await.expect_err("to_x is required");
+        assert!(err.to_string().contains("'to_x' required"));
+        let err = ghost_drag(json!({ "to_x": 5.0 }))
+            .await
+            .expect_err("to_y is required");
+        assert!(err.to_string().contains("'to_y' required"));
+    }
+
+    #[tokio::test]
+    async fn ghost_focus_requires_app() {
+        let err = ghost_focus(json!({})).await.expect_err("app is required");
+        assert!(err.to_string().contains("'app' required"));
+    }
+
+    #[tokio::test]
+    async fn ghost_window_validates_action_then_app_then_unknown_action() {
+        let err = ghost_window(json!({})).await.expect_err("action required");
+        assert!(err.to_string().contains("'action' required"));
+
+        let err = ghost_window(json!({ "action": "minimize" }))
+            .await
+            .expect_err("app required");
+        assert!(err.to_string().contains("'app' required"));
+
+        // A syntactically valid call with an unknown action errors before any OS call.
+        let err = ghost_window(json!({ "action": "teleport", "app": "Finder" }))
+            .await
+            .expect_err("unknown action");
+        assert!(err.to_string().contains("Unknown action"));
+    }
 }

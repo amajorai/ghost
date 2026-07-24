@@ -7,7 +7,10 @@ mod vision_model;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "ghost", about = "Ghost — AI eyes and hands for any desktop app")]
+#[command(
+    name = "ghost",
+    about = "Ghost — AI eyes and hands for any desktop app"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -39,10 +42,10 @@ async fn main() {
 
     let cli = Cli::parse();
     match cli.command {
-        Commands::Mcp     => mcp::server::run().await,
+        Commands::Mcp => mcp::server::run().await,
         Commands::Version => println!("ghost {}", env!("CARGO_PKG_VERSION")),
-        Commands::Doctor  => run_doctor().await,
-        Commands::Setup   => run_setup(),
+        Commands::Doctor => run_doctor().await,
+        Commands::Setup => run_setup(),
     }
 }
 
@@ -56,21 +59,33 @@ fn run_setup() {
     println!(
         "[{}] Accessibility: {}",
         if ax { "OK" } else { "  " },
-        if ax { "granted" } else { "prompt requested — enable Ghost in the pane that opened" }
+        if ax {
+            "granted"
+        } else {
+            "prompt requested — enable Ghost in the pane that opened"
+        }
     );
 
     let screen = ghost_permissions::request_screen_recording();
     println!(
         "[{}] Screen Recording: {}",
         if screen { "OK" } else { "  " },
-        if screen { "granted" } else { "prompt requested — enable Ghost in the pane that opened" }
+        if screen {
+            "granted"
+        } else {
+            "prompt requested — enable Ghost in the pane that opened"
+        }
     );
 
     let input = ghost_permissions::request_input_monitoring();
     println!(
         "[{}] Input Monitoring: {}",
         if input { "OK" } else { "  " },
-        if input { "granted" } else { "prompt requested — enable Ghost in the pane that opened" }
+        if input {
+            "granted"
+        } else {
+            "prompt requested — enable Ghost in the pane that opened"
+        }
     );
 
     println!();
@@ -82,6 +97,47 @@ fn run_setup() {
              granted, then fully restart Ghost (and the MCP client that launched it) for the \
              grant to apply. Verify with: ghost doctor"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_subcommand_parses_to_its_variant() {
+        assert!(matches!(
+            Cli::try_parse_from(["ghost", "mcp"]).unwrap().command,
+            Commands::Mcp
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["ghost", "version"]).unwrap().command,
+            Commands::Version
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["ghost", "doctor"]).unwrap().command,
+            Commands::Doctor
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["ghost", "setup"]).unwrap().command,
+            Commands::Setup
+        ));
+    }
+
+    #[test]
+    fn missing_subcommand_is_an_error() {
+        assert!(Cli::try_parse_from(["ghost"]).is_err());
+    }
+
+    #[test]
+    fn unknown_subcommand_is_an_error() {
+        assert!(Cli::try_parse_from(["ghost", "haunt"]).is_err());
+    }
+
+    #[test]
+    fn subcommands_are_case_sensitive() {
+        // clap subcommands are case-sensitive by default.
+        assert!(Cli::try_parse_from(["ghost", "MCP"]).is_err());
     }
 }
 
@@ -160,7 +216,10 @@ async fn run_doctor() {
         .and_then(|s| s.list())
         .map(|v| v.len())
         .unwrap_or(0);
-    println!("[OK] Recipes: {} loaded from ~/.ghost/recipes/", recipe_count);
+    println!(
+        "[OK] Recipes: {} loaded from ~/.ghost/recipes/",
+        recipe_count
+    );
 
     println!();
     if ax_ok && screen_ok && input_ok {

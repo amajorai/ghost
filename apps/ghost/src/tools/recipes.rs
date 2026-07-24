@@ -12,24 +12,34 @@ pub async fn ghost_recipes(_params: Value) -> Result<Value> {
     let store = RecipeStore::open()?;
     let recipes = store.list()?;
 
-    let list: Vec<Value> = recipes.iter().map(|r| json!({
-        "name":        r.name,
-        "description": r.description,
-        "app":         r.app,
-        "params":      r.params.as_ref().map(|p| p.keys().collect::<Vec<_>>()),
-        "step_count":  r.steps.len(),
-    })).collect();
+    let list: Vec<Value> = recipes
+        .iter()
+        .map(|r| {
+            json!({
+                "name":        r.name,
+                "description": r.description,
+                "app":         r.app,
+                "params":      r.params.as_ref().map(|p| p.keys().collect::<Vec<_>>()),
+                "step_count":  r.steps.len(),
+            })
+        })
+        .collect();
 
     Ok(json!({ "count": list.len(), "recipes": list }))
 }
 
 pub async fn ghost_run(params: Value) -> Result<Value> {
-    let recipe_name = params["recipe"].as_str()
+    let recipe_name = params["recipe"]
+        .as_str()
         .ok_or_else(|| anyhow::anyhow!("'recipe' required"))?;
 
     let provided_params: HashMap<String, String> = params["params"]
         .as_object()
-        .map(|o| o.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect())
+        .map(|o| {
+            o.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
         .unwrap_or_default();
 
     let store = RecipeStore::open()?;
@@ -47,17 +57,20 @@ pub async fn ghost_run(params: Value) -> Result<Value> {
             let app_lc = app.to_lowercase();
             // Each entry is { "pid": N, "name": "process.exe" }
             let running = running_apps.iter().any(|a| {
-                a["name"].as_str()
+                a["name"]
+                    .as_str()
                     .map(|n| n.to_lowercase().contains(&app_lc))
                     .unwrap_or(false)
             });
             if !running {
-                let names: Vec<&str> = running_apps.iter()
+                let names: Vec<&str> = running_apps
+                    .iter()
                     .filter_map(|a| a["name"].as_str())
                     .collect();
                 return Err(anyhow::anyhow!(
                     "Precondition failed: app '{}' is not running. Running: {:?}",
-                    app, names
+                    app,
+                    names
                 ));
             }
         }
@@ -65,13 +78,16 @@ pub async fn ghost_run(params: Value) -> Result<Value> {
             use ghost_eyes::{PlatformWindowTracker, WindowTracker};
             let tracker = PlatformWindowTracker::new()
                 .map_err(|e| anyhow::anyhow!("WindowTracker unavailable: {e}"))?;
-            let current_url = tracker.get_active_window().await
+            let current_url = tracker
+                .get_active_window()
+                .await
                 .and_then(|w| w.url)
                 .unwrap_or_default();
             if !current_url.contains(url_substr.as_str()) {
                 return Err(anyhow::anyhow!(
                     "Precondition failed: current URL '{}' does not contain '{}'",
-                    current_url, url_substr
+                    current_url,
+                    url_substr
                 ));
             }
         }
@@ -89,13 +105,13 @@ pub async fn ghost_run(params: Value) -> Result<Value> {
         let duration_ms = start.elapsed().as_millis() as u64;
 
         let (success, error) = match result {
-            Ok(_)  => (true,  None),
+            Ok(_) => (true, None),
             Err(e) => (false, Some(e.to_string())),
         };
 
         step_results.push(RecipeStepResult {
             step_id: step_sub.id,
-            action:  step_sub.action.clone(),
+            action: step_sub.action.clone(),
             success,
             duration_ms,
             error: error.clone(),
@@ -104,7 +120,11 @@ pub async fn ghost_run(params: Value) -> Result<Value> {
 
         // Handle step failure
         if !success {
-            let on_fail = step_sub.on_failure.as_deref().or(recipe.on_failure.as_deref()).unwrap_or("abort");
+            let on_fail = step_sub
+                .on_failure
+                .as_deref()
+                .or(recipe.on_failure.as_deref())
+                .unwrap_or("abort");
             if on_fail == "abort" || on_fail == "fail" {
                 let run_result = RecipeRunResult {
                     recipe_name: recipe_name.to_string(),
@@ -144,14 +164,17 @@ pub async fn ghost_run(params: Value) -> Result<Value> {
 }
 
 pub async fn ghost_recipe_show(params: Value) -> Result<Value> {
-    let name = params["name"].as_str().ok_or_else(|| anyhow::anyhow!("'name' required"))?;
+    let name = params["name"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("'name' required"))?;
     let store = RecipeStore::open()?;
     let recipe = store.get(name)?;
     Ok(serde_json::to_value(&recipe)?)
 }
 
 pub async fn ghost_recipe_save(params: Value) -> Result<Value> {
-    let json_str = params["recipe_json"].as_str()
+    let json_str = params["recipe_json"]
+        .as_str()
         .ok_or_else(|| anyhow::anyhow!("'recipe_json' required"))?;
     let store = RecipeStore::open()?;
     let recipe = store.save_json(json_str)?;
@@ -159,7 +182,9 @@ pub async fn ghost_recipe_save(params: Value) -> Result<Value> {
 }
 
 pub async fn ghost_recipe_delete(params: Value) -> Result<Value> {
-    let name = params["name"].as_str().ok_or_else(|| anyhow::anyhow!("'name' required"))?;
+    let name = params["name"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("'name' required"))?;
     let store = RecipeStore::open()?;
     store.delete(name)?;
     Ok(json!({ "deleted": true, "name": name }))
@@ -173,86 +198,173 @@ async fn execute_step(
 ) -> Result<()> {
     use crate::tools::{actions, perception};
 
-    let target_query     = step.target.as_ref().and_then(|t| t.query.as_deref()).unwrap_or("");
-    let target_app       = step.target.as_ref().and_then(|t| t.app.as_deref());
-    let target_dom_id    = step.target.as_ref().and_then(|t| t.dom_id.as_deref());
+    let target_query = step
+        .target
+        .as_ref()
+        .and_then(|t| t.query.as_deref())
+        .unwrap_or("");
+    let target_app = step.target.as_ref().and_then(|t| t.app.as_deref());
+    let target_dom_id = step.target.as_ref().and_then(|t| t.dom_id.as_deref());
     let target_dom_class = step.target.as_ref().and_then(|t| t.dom_class.as_deref());
-    let step_params      = step.params.as_ref();
+    let step_params = step.params.as_ref();
 
     match step.action.as_str() {
         "click" => {
             let mut call = json!({ "query": target_query });
-            if let Some(app) = target_app       { call["app"]       = json!(app); }
-            if let Some(id)  = target_dom_id    { call["dom_id"]    = json!(id); }
-            if let Some(cls) = target_dom_class { call["dom_class"] = json!(cls); }
+            if let Some(app) = target_app {
+                call["app"] = json!(app);
+            }
+            if let Some(id) = target_dom_id {
+                call["dom_id"] = json!(id);
+            }
+            if let Some(cls) = target_dom_class {
+                call["dom_class"] = json!(cls);
+            }
             actions::ghost_click(call).await.map(|_| ())
         }
         "type" => {
-            let text = step_params.and_then(|p| p.get("text")).map(|s| s.as_str()).unwrap_or("");
+            let text = step_params
+                .and_then(|p| p.get("text"))
+                .map(|s| s.as_str())
+                .unwrap_or("");
             let mut call = json!({ "text": text, "into": target_query });
-            if let Some(app) = target_app    { call["app"]    = json!(app); }
-            if let Some(id)  = target_dom_id { call["dom_id"] = json!(id); }
-            if let Some(p) = step_params { if p.contains_key("clear") { call["clear"] = json!(true); } }
+            if let Some(app) = target_app {
+                call["app"] = json!(app);
+            }
+            if let Some(id) = target_dom_id {
+                call["dom_id"] = json!(id);
+            }
+            if let Some(p) = step_params {
+                if p.contains_key("clear") {
+                    call["clear"] = json!(true);
+                }
+            }
             actions::ghost_type(call).await.map(|_| ())
         }
         "hotkey" | "keyboard_shortcut" => {
-            let keys_str = step_params.and_then(|p| p.get("keys")).map(|s| s.as_str()).unwrap_or("");
+            let keys_str = step_params
+                .and_then(|p| p.get("keys"))
+                .map(|s| s.as_str())
+                .unwrap_or("");
             let keys: Vec<&str> = keys_str.split('+').map(|s| s.trim()).collect();
             let mut call = json!({ "keys": keys });
-            if let Some(app) = target_app { call["app"] = json!(app); }
+            if let Some(app) = target_app {
+                call["app"] = json!(app);
+            }
             actions::ghost_hotkey(call).await.map(|_| ())
         }
         "press" => {
-            let key = step_params.and_then(|p| p.get("key")).map(|s| s.as_str()).unwrap_or("return");
+            let key = step_params
+                .and_then(|p| p.get("key"))
+                .map(|s| s.as_str())
+                .unwrap_or("return");
             let mut call = json!({ "key": key });
-            if let Some(app) = target_app { call["app"] = json!(app); }
+            if let Some(app) = target_app {
+                call["app"] = json!(app);
+            }
             actions::ghost_press(call).await.map(|_| ())
         }
         "scroll" => {
-            let dir = step_params.and_then(|p| p.get("direction")).map(|s| s.as_str()).unwrap_or("down");
-            let amt = step_params.and_then(|p| p.get("amount")).and_then(|s| s.parse::<i64>().ok()).unwrap_or(3);
+            let dir = step_params
+                .and_then(|p| p.get("direction"))
+                .map(|s| s.as_str())
+                .unwrap_or("down");
+            let amt = step_params
+                .and_then(|p| p.get("amount"))
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(3);
             let mut call = json!({ "direction": dir, "amount": amt });
-            if let Some(app) = target_app { call["app"] = json!(app); }
+            if let Some(app) = target_app {
+                call["app"] = json!(app);
+            }
             actions::ghost_scroll(call).await.map(|_| ())
         }
         "focus" => {
-            let app = target_app.or_else(|| step_params.and_then(|p| p.get("app")).map(|s| s.as_str())).unwrap_or("");
-            actions::ghost_focus(json!({ "app": app })).await.map(|_| ())
+            let app = target_app
+                .or_else(|| step_params.and_then(|p| p.get("app")).map(|s| s.as_str()))
+                .unwrap_or("");
+            actions::ghost_focus(json!({ "app": app }))
+                .await
+                .map(|_| ())
         }
         "wait" => {
-            let secs = step_params.and_then(|p| p.get("seconds")).and_then(|s| s.parse::<f64>().ok()).unwrap_or(1.0);
+            let secs = step_params
+                .and_then(|p| p.get("seconds"))
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(1.0);
             tokio::time::sleep(tokio::time::Duration::from_secs_f64(secs)).await;
             Ok(())
         }
         "hover" => {
             let mut call = json!({ "query": target_query });
-            if let Some(app) = target_app       { call["app"]       = json!(app); }
-            if let Some(id)  = target_dom_id    { call["dom_id"]    = json!(id); }
-            if let Some(cls) = target_dom_class { call["dom_class"] = json!(cls); }
-            if let Some(x) = param_f64(step_params, "x") { call["x"] = json!(x); }
-            if let Some(y) = param_f64(step_params, "y") { call["y"] = json!(y); }
+            if let Some(app) = target_app {
+                call["app"] = json!(app);
+            }
+            if let Some(id) = target_dom_id {
+                call["dom_id"] = json!(id);
+            }
+            if let Some(cls) = target_dom_class {
+                call["dom_class"] = json!(cls);
+            }
+            if let Some(x) = param_f64(step_params, "x") {
+                call["x"] = json!(x);
+            }
+            if let Some(y) = param_f64(step_params, "y") {
+                call["y"] = json!(y);
+            }
             actions::ghost_hover(call).await.map(|_| ())
         }
         "long_press" => {
             let mut call = json!({ "query": target_query });
-            if let Some(app) = target_app       { call["app"]       = json!(app); }
-            if let Some(id)  = target_dom_id    { call["dom_id"]    = json!(id); }
-            if let Some(cls) = target_dom_class { call["dom_class"] = json!(cls); }
-            if let Some(x) = param_f64(step_params, "x") { call["x"] = json!(x); }
-            if let Some(y) = param_f64(step_params, "y") { call["y"] = json!(y); }
-            if let Some(d) = param_f64(step_params, "duration") { call["duration"] = json!(d); }
-            if let Some(b) = step_params.and_then(|p| p.get("button")).map(|s| s.as_str()) { call["button"] = json!(b); }
+            if let Some(app) = target_app {
+                call["app"] = json!(app);
+            }
+            if let Some(id) = target_dom_id {
+                call["dom_id"] = json!(id);
+            }
+            if let Some(cls) = target_dom_class {
+                call["dom_class"] = json!(cls);
+            }
+            if let Some(x) = param_f64(step_params, "x") {
+                call["x"] = json!(x);
+            }
+            if let Some(y) = param_f64(step_params, "y") {
+                call["y"] = json!(y);
+            }
+            if let Some(d) = param_f64(step_params, "duration") {
+                call["duration"] = json!(d);
+            }
+            if let Some(b) = step_params
+                .and_then(|p| p.get("button"))
+                .map(|s| s.as_str())
+            {
+                call["button"] = json!(b);
+            }
             actions::ghost_long_press(call).await.map(|_| ())
         }
         "drag" => {
             let mut call = json!({});
-            if !target_query.is_empty() { call["query"] = json!(target_query); }
-            if let Some(app) = target_app { call["app"] = json!(app); }
-            if let Some(x) = param_f64(step_params, "from_x") { call["from_x"] = json!(x); }
-            if let Some(y) = param_f64(step_params, "from_y") { call["from_y"] = json!(y); }
-            if let Some(x) = param_f64(step_params, "to_x")   { call["to_x"]   = json!(x); }
-            if let Some(y) = param_f64(step_params, "to_y")   { call["to_y"]   = json!(y); }
-            if let Some(d) = param_f64(step_params, "duration") { call["duration"] = json!(d); }
+            if !target_query.is_empty() {
+                call["query"] = json!(target_query);
+            }
+            if let Some(app) = target_app {
+                call["app"] = json!(app);
+            }
+            if let Some(x) = param_f64(step_params, "from_x") {
+                call["from_x"] = json!(x);
+            }
+            if let Some(y) = param_f64(step_params, "from_y") {
+                call["from_y"] = json!(y);
+            }
+            if let Some(x) = param_f64(step_params, "to_x") {
+                call["to_x"] = json!(x);
+            }
+            if let Some(y) = param_f64(step_params, "to_y") {
+                call["to_y"] = json!(y);
+            }
+            if let Some(d) = param_f64(step_params, "duration") {
+                call["duration"] = json!(d);
+            }
             actions::ghost_drag(call).await.map(|_| ())
         }
         "delay" | "sleep" => {
@@ -260,22 +372,30 @@ async fn execute_step(
             tokio::time::sleep(tokio::time::Duration::from_secs_f64(secs)).await;
             Ok(())
         }
-        "screenshot" => {
-            perception::ghost_screenshot(json!({})).await.map(|_| ())
-        }
+        "screenshot" => perception::ghost_screenshot(json!({})).await.map(|_| ()),
         "double_click" => {
             let mut call = json!({ "query": target_query, "count": 2 });
-            if let Some(app) = target_app    { call["app"]    = json!(app); }
-            if let Some(id)  = target_dom_id { call["dom_id"] = json!(id); }
+            if let Some(app) = target_app {
+                call["app"] = json!(app);
+            }
+            if let Some(id) = target_dom_id {
+                call["dom_id"] = json!(id);
+            }
             actions::ghost_click(call).await.map(|_| ())
         }
         "window" => {
-            let action = step_params.and_then(|p| p.get("action")).map(|s| s.as_str()).unwrap_or("focus");
+            let action = step_params
+                .and_then(|p| p.get("action"))
+                .map(|s| s.as_str())
+                .unwrap_or("focus");
             let app = target_app
                 .or_else(|| step_params.and_then(|p| p.get("app")).map(|s| s.as_str()))
                 .unwrap_or("");
             let mut call = json!({ "action": action, "app": app });
-            if let Some(title) = step_params.and_then(|p| p.get("window")).map(|s| s.as_str()) {
+            if let Some(title) = step_params
+                .and_then(|p| p.get("window"))
+                .map(|s| s.as_str())
+            {
                 call["window"] = json!(title);
             }
             actions::ghost_window(call).await.map(|_| ())
@@ -286,4 +406,78 @@ async fn execute_step(
 
 fn param_f64(params: Option<&std::collections::HashMap<String, String>>, key: &str) -> Option<f64> {
     params?.get(key)?.parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ghost_core::recipe::types::RecipeStep;
+
+    fn step(action: &str, params: Option<HashMap<String, String>>) -> RecipeStep {
+        RecipeStep {
+            id: 1,
+            action: action.into(),
+            target: None,
+            params,
+            wait_after: None,
+            note: None,
+            on_failure: None,
+        }
+    }
+
+    #[test]
+    fn param_f64_parses_present_numeric_values() {
+        let mut m = HashMap::new();
+        m.insert("duration".to_string(), "2.5".to_string());
+        m.insert("bad".to_string(), "not-a-number".to_string());
+        assert_eq!(param_f64(Some(&m), "duration"), Some(2.5));
+        // Non-numeric string → None.
+        assert_eq!(param_f64(Some(&m), "bad"), None);
+        // Missing key → None.
+        assert_eq!(param_f64(Some(&m), "absent"), None);
+        // No params map at all → None.
+        assert_eq!(param_f64(None, "duration"), None);
+    }
+
+    #[tokio::test]
+    async fn execute_step_rejects_unknown_action() {
+        let params = HashMap::new();
+        let err = execute_step(&step("teleport", None), &params)
+            .await
+            .expect_err("unknown action must error");
+        assert!(
+            err.to_string().contains("Unknown recipe action: 'teleport'"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_step_wait_and_delay_are_pure_sleeps() {
+        let params = HashMap::new();
+        // "wait" with seconds 0 completes immediately without any AX/action call.
+        let mut wait_params = HashMap::new();
+        wait_params.insert("seconds".to_string(), "0".to_string());
+        execute_step(&step("wait", Some(wait_params)), &params)
+            .await
+            .expect("wait step succeeds");
+
+        // "delay"/"sleep" use `duration`; 0 completes immediately.
+        let mut delay_params = HashMap::new();
+        delay_params.insert("duration".to_string(), "0".to_string());
+        execute_step(&step("delay", Some(delay_params.clone())), &params)
+            .await
+            .expect("delay step succeeds");
+        execute_step(&step("sleep", Some(delay_params)), &params)
+            .await
+            .expect("sleep step succeeds");
+    }
+
+    #[tokio::test]
+    async fn ghost_run_requires_recipe_name() {
+        // Missing 'recipe' is rejected before the store is ever opened.
+        let err = ghost_run(json!({}))
+            .await
+            .expect_err("recipe name is required");
+        assert!(err.to_string().contains("'recipe' required"));
+    }
 }

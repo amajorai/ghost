@@ -152,4 +152,20 @@ mod tests {
             assert_eq!(value["phase"], serde_json::json!(phase));
         }
     }
+
+    #[test]
+    fn now_millis_reads_the_wall_clock() {
+        assert!(now_millis() > 1_600_000_000_000);
+    }
+
+    // Run under a runtime so the emit path is safe whether or not an overlay URL is set
+    // in the environment (a set URL would `tokio::spawn` the detached POST).
+    #[tokio::test]
+    async fn emit_and_press_helpers_never_panic() {
+        // With no overlay URL these are pure no-ops; the point is that narrating an
+        // action must never fail or block the caller regardless of overlay presence.
+        emit("move", 1, 2, "ghost_click");
+        press_start(3, 4, "ghost_click");
+        press_end(5, 6, "ghost_click");
+    }
 }

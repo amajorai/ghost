@@ -8,7 +8,7 @@
 #[cfg(feature = "ort")]
 pub mod showui {
     use anyhow::Result;
-    use ort::session::{Session, builder::GraphOptimizationLevel};
+    use ort::session::{builder::GraphOptimizationLevel, Session};
     use ort::value::Tensor;
     use std::sync::Mutex;
 
@@ -21,7 +21,7 @@ pub mod showui {
     const SHOWUI_W: u32 = 1280;
     const SHOWUI_H: u32 = 828;
     const SHOWUI_MEAN: [f32; 3] = [0.48145466, 0.4578275, 0.40821073];
-    const SHOWUI_STD:  [f32; 3] = [0.26862954, 0.26130258, 0.27577711];
+    const SHOWUI_STD: [f32; 3] = [0.26862954, 0.26130258, 0.27577711];
 
     /// Return the default model path: `~/.ghost/models/showui-2b.onnx`.
     pub fn default_model_path() -> std::path::PathBuf {
@@ -58,14 +58,22 @@ pub mod showui {
                 .commit_from_file(&path)
                 .map_err(|e| anyhow::anyhow!("Failed to load ShowUI-2B: {}", e))?;
             tracing::info!("ShowUI-2B loaded");
-            Ok(Self { session: Mutex::new(session) })
+            Ok(Self {
+                session: Mutex::new(session),
+            })
         }
 
         /// Run grounding: BGRA screenshot + text instruction → normalised (x, y).
         ///
         /// Returns coordinates clamped to [0.0, 1.0]. Multiply by image width/height
         /// to get pixel coordinates.
-        pub fn run(&self, bgra: &[u8], width: u32, height: u32, instruction: &str) -> Result<GroundingOutput> {
+        pub fn run(
+            &self,
+            bgra: &[u8],
+            width: u32,
+            height: u32,
+            instruction: &str,
+        ) -> Result<GroundingOutput> {
             let img_pixels = bgra_to_chw(bgra, width, height)?;
             let img_tensor = Tensor::<f32>::from_array((
                 [1usize, 3, SHOWUI_H as usize, SHOWUI_W as usize],

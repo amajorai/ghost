@@ -16,10 +16,29 @@ use ghost_eyes::{AXTree, AXTreeNode, Bounds, PlatformAXTree};
 use super::str_param;
 
 const DEFAULT_ROLES: &[&str] = &[
-    "button", "link", "text field", "textfield", "edit", "checkbox", "combo box",
-    "combobox", "tab", "slider", "menu item", "radio", "list item", "cell",
-    "AXButton", "AXLink", "AXTextField", "AXCheckBox", "AXComboBox", "AXTab",
-    "AXSlider", "AXMenuItem", "AXRadioButton",
+    "button",
+    "link",
+    "text field",
+    "textfield",
+    "edit",
+    "checkbox",
+    "combo box",
+    "combobox",
+    "tab",
+    "slider",
+    "menu item",
+    "radio",
+    "list item",
+    "cell",
+    "AXButton",
+    "AXLink",
+    "AXTextField",
+    "AXCheckBox",
+    "AXComboBox",
+    "AXTab",
+    "AXSlider",
+    "AXMenuItem",
+    "AXRadioButton",
 ];
 
 /// A single interactive element resolved from the accessibility tree.
@@ -209,4 +228,164 @@ pub async fn ghost_parse_screen(params: Value) -> Result<Value> {
         "usage": "Each element carries pixel x/y — pass them to ghost_click/ghost_hover. \
                   Use ghost_annotate for a labeled screenshot of the same elements.",
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn el(role: &str, title: Option<&str>) -> Element {
+        Element {
+            role: role.into(),
+            title: title.map(Into::into),
+            bounds: Bounds {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 10,
+            },
+            cx: 5,
+            cy: 5,
+        }
+    }
+
+    fn node(
+        role: &str,
+        title: Option<&str>,
+        bounds: Option<Bounds>,
+        children: Vec<AXTreeNode>,
+    ) -> AXTreeNode {
+        AXTreeNode {
+            role: role.into(),
+            title: title.map(Into::into),
+            value: None,
+            identifier: None,
+            bounds,
+            children,
+            enabled: true,
+            focused: false,
+            hidden: false,
+        }
+    }
+
+    #[test]
+    fn match_score_exact_title_beats_substring_beats_tokens() {
+        // Exact title match is the strongest signal.
+        let exact = match_score("send", &el("AXButton", Some("Send")));
+        // Description is a substring of the title → 1.2.
+        let substr = match_score("sen", &el("AXButton", Some("Send")));
+        // Neither is a substring of the other → falls to token overlap. Desc tokens
+        // {reply, now}: "reply" hits the title text, "now" misses → 1/2 = 0.5.
+        let token = match_score("reply now", &el("AXButton", Some("Reply All")));
+        assert_eq!(exact, 1.5);
+        assert_eq!(substr, 1.2);
+        assert_eq!(token, 0.5);
+        assert!(exact > substr && substr > token);
+    }
+
+    #[test]
+    fn match_score_full_title_substring_of_description_scores_high() {
+        // When the description contains the whole title, that's a substring hit → 1.2.
+        assert_eq!(
+            match_score("click the send button", &el("AXButton", Some("Send"))),
+            1.2
+        );
+    }
+
+    #[test]
+    fn match_score_zero_when_no_title_or_no_overlap() {
+        // No title → nothing to match against.
+        assert_eq!(match_score("anything", &el("AXButton", None)), 0.0);
+        // Real words, zero token overlap, neither a substring of the other.
+        assert_eq!(
+            match_score("xyzzy plugh", &el("AXButton", Some("Compose"))),
+            0.0
+        );
+    }
+
+    #[test]
+    fn match_score_single_char_tokens_are_ignored() {
+        // Tokens of length 1 are filtered out; "a" alone leaves no tokens → 0.0
+        // (and "a" is not a substring of "Compose").
+        assert_eq!(match_score("a", &el("AXButton", Some("Compose"))), 0.0);
+    }
+
+    #[test]
+    fn collect_gathers_interactive_elements_with_positive_area() {
+        let roles: Vec<String> = DEFAULT_ROLES.iter().map(|s| s.to_lowercase()).collect();
+        let tree = node(
+            "window",
+            Some("Main"),
+            None,
+            vec![
+                node(
+                    "AXButton",
+                    Some("OK"),
+                    Some(Bounds {
+                        x: 10,
+                        y: 20,
+                        width: 40,
+                        height: 20,
+                    }),
+                    vec![],
+                ),
+                // Zero-area element is skipped.
+                node(
+                    "AXButton",
+                    Some("Hidden"),
+                    Some(Bounds {
+                        x: 0,
+                        y: 0,
+                        width: 0,
+                        height: 0,
+                    }),
+                    vec![],
+                ),
+                // Interactive role but no bounds → skipped.
+                node("AXLink", Some("NoBounds"), None, vec![]),
+                // Non-interactive → skipped.
+                node(
+                    "AXStaticText",
+                    Some("label"),
+                    Some(Bounds {
+                        x: 0,
+                        y: 0,
+                        width: 5,
+                        height: 5,
+                    }),
+                    vec![],
+                ),
+            ],
+        );
+        let mut out = vec![];
+        collect(&tree, &roles, 100, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].title.as_deref(), Some("OK"));
+        // Center of (10,20,40,20) = (30, 30).
+        assert_eq!((out[0].cx, out[0].cy), (30, 30));
+    }
+
+    #[test]
+    fn collect_honors_the_max_cap() {
+        let roles: Vec<String> = DEFAULT_ROLES.iter().map(|s| s.to_lowercase()).collect();
+        let buttons: Vec<AXTreeNode> = (0..5)
+            .map(|i| {
+                node(
+                    "AXButton",
+                    Some(&format!("b{i}")),
+                    Some(Bounds {
+                        x: 0,
+                        y: 0,
+                        width: 4,
+                        height: 4,
+                    }),
+                    vec![],
+                )
+            })
+            .collect();
+        let tree = node("window", None, None, buttons);
+        let mut out = vec![];
+        collect(&tree, &roles, 2, &mut out);
+        assert_eq!(out.len(), 2);
+    }
 }
