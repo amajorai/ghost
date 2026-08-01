@@ -27,7 +27,11 @@ fn shadow_api_token() -> Option<String> {
     if let Ok(dir) = std::env::var("RYU_DIR") {
         let dir = dir.trim();
         if !dir.is_empty() {
-            candidates.push(std::path::PathBuf::from(dir).join("shadow").join("api-token"));
+            candidates.push(
+                std::path::PathBuf::from(dir)
+                    .join("shadow")
+                    .join("api-token"),
+            );
         }
     }
     if let Some(home) = dirs::home_dir() {
@@ -126,7 +130,11 @@ mod tests {
         // SAFETY: edition 2021; the only writer of this var across the test binary.
         std::env::set_var("SHADOW_API_TOKEN", "  secret-token  ");
         let good = shadow_api_token();
-        assert_eq!(good.as_deref(), Some("secret-token"), "env token wins, trimmed");
+        assert_eq!(
+            good.as_deref(),
+            Some("secret-token"),
+            "env token wins, trimmed"
+        );
 
         // A whitespace-only env token must not be accepted as the bearer.
         std::env::set_var("SHADOW_API_TOKEN", "   ");

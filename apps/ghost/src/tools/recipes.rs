@@ -446,7 +446,8 @@ mod tests {
             .await
             .expect_err("unknown action must error");
         assert!(
-            err.to_string().contains("Unknown recipe action: 'teleport'"),
+            err.to_string()
+                .contains("Unknown recipe action: 'teleport'"),
             "got: {err}"
         );
     }

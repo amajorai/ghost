@@ -543,7 +543,15 @@ mod tests {
 
     #[test]
     fn is_layout_container_covers_structural_roles_and_empty() {
-        for role in ["group", "AXGroup", "scrollarea", "box", "generic", "none", ""] {
+        for role in [
+            "group",
+            "AXGroup",
+            "scrollarea",
+            "box",
+            "generic",
+            "none",
+            "",
+        ] {
             assert!(
                 is_layout_container(&node(role, None, None, vec![])),
                 "{role} should be a layout container"

@@ -272,7 +272,12 @@ mod tests {
     use super::*;
     use ghost_eyes::{AXTreeNode, Bounds};
 
-    fn node(role: &str, title: Option<&str>, bounds: Option<Bounds>, children: Vec<AXTreeNode>) -> AXTreeNode {
+    fn node(
+        role: &str,
+        title: Option<&str>,
+        bounds: Option<Bounds>,
+        children: Vec<AXTreeNode>,
+    ) -> AXTreeNode {
         AXTreeNode {
             role: role.into(),
             title: title.map(Into::into),
@@ -287,14 +292,22 @@ mod tests {
     }
 
     fn bounds(x: i32, y: i32, w: u32, h: u32) -> Bounds {
-        Bounds { x, y, width: w, height: h }
+        Bounds {
+            x,
+            y,
+            width: w,
+            height: h,
+        }
     }
 
     #[test]
     fn char_pattern_has_a_lit_pixel_for_every_digit_and_blank_otherwise() {
         for d in '0'..='9' {
             let p = char_pattern(d);
-            assert!(p.iter().any(|row| *row != 0), "digit {d} must have lit pixels");
+            assert!(
+                p.iter().any(|row| *row != 0),
+                "digit {d} must have lit pixels"
+            );
         }
         // Non-digit → all-blank fallback.
         assert_eq!(char_pattern('x'), [0u8; 5]);
