@@ -5,7 +5,7 @@
 [![License](https://shieldcn.dev/badge/License-Apache--2.0-73DC8C.svg?logo=apache&logoColor=white)](./LICENSE)
 [![Stack](https://shieldcn.dev/badge/Rust-MCP-dea584.svg?logo=rust&logoColor=white)](../../README.md)
 
-Ghost is a Rust MCP server that gives an agent eyes and hands on the desktop — 30 tools for screen capture/OCR, UI element detection, mouse/keyboard control, and token-efficient `@eN` element refs (`ghost_snapshot` captures a skeleton once; `ghost_click`/`ghost_type` act on a ref). It is Windows-first and speaks the Model Context Protocol over stdio. Within Ryu it is callable via Core's MCP registry (`POST /api/mcp/tools/call`) and is not surfaced in the desktop UI.
+Ghost is a Rust MCP server that gives an agent eyes and hands on the desktop — 30 tools for screen capture/OCR, UI element detection, mouse/keyboard control, and token-efficient `@eN` element refs (`ghost_snapshot` captures a skeleton once; `ghost_click`/`ghost_type` act on a ref). It is cross-platform (Windows, macOS, Linux) and speaks the Model Context Protocol over stdio. Within Ryu it is callable via Core's MCP registry (`POST /api/mcp/tools/call`) and is not surfaced in the desktop UI.
 
 **Tier:** OSS, self-hostable — Apache-2.0
 

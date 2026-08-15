@@ -8,14 +8,14 @@
 
 Ghost is a Rust MCP server (~30 tools) that gives an agent the ability to *see* the screen (capture,
 OCR, UI-element detection) and *act* on it (click, type, scroll, drag), plus a record→replay recipe
-engine. Windows-first. It's a component of [Ryu](https://github.com/amajorai/ryu) but runs standalone
+engine. Cross-platform (Windows, macOS, Linux). It's a component of [Ryu](https://github.com/amajorai/ryu) but runs standalone
 with any MCP-capable client.
 
 - 👁️ **See.** Screen capture, OCR, and UI-element detection over the accessibility tree.
 - ✋ **Act.** Click, type, scroll, and drag through synthetic keyboard/mouse input.
 - 🎬 **Record → replay.** Capture a task once, replay it deterministically as a parameterized recipe.
 - 🧩 **~30 MCP tools.** Drop into any MCP client, or let Ryu Core spawn it as a sidecar. Stdio, no network port.
-- 🪟 **Windows-first.** Cross-platform (macOS/Linux) perception + input backends are in progress.
+- 🌍 **Cross-platform.** Windows, macOS and Linux perception + input backends ship in the same binary.
 - 🔓 **Open & auditable.** Dual-use by nature, so the behaviour is open source and, inside Ryu, consent-gated.
 
 ## Layout
