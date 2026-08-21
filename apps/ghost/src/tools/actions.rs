@@ -28,10 +28,11 @@ pub async fn ghost_click(params: Value) -> Result<Value> {
         let button = str_to_button(str_param(&params, "button").unwrap_or("left"));
         let count = int_param(&params, "count", 1) as u32;
         let plan = plan_click(mode, false, false);
-        overlay_events::press_start(x, y, "ghost_click");
+        let intent = click_intent(None);
+        overlay_events::press_start_with_intent(x, y, "ghost_click", &intent);
         let via =
             tokio::task::spawn_blocking(move || execute_click(x, y, button, count, plan)).await??;
-        overlay_events::press_end(x, y, "ghost_click");
+        overlay_events::press_end_with_intent(x, y, "ghost_click", &intent);
         return Ok(
             json!({ "success": true, "x": x, "y": y, "ref": r, "method": "ref", "via": via }),
         );
@@ -42,12 +43,13 @@ pub async fn ghost_click(params: Value) -> Result<Value> {
         let button = str_to_button(str_param(&params, "button").unwrap_or("left"));
         let count = int_param(&params, "count", 1) as u32;
         let plan = plan_click(mode, false, true);
-        overlay_events::press_start(x as i32, y as i32, "ghost_click");
+        let intent = click_intent(None);
+        overlay_events::press_start_with_intent(x as i32, y as i32, "ghost_click", &intent);
         let via = tokio::task::spawn_blocking(move || {
             execute_click(x as i32, y as i32, button, count, plan)
         })
         .await??;
-        overlay_events::press_end(x as i32, y as i32, "ghost_click");
+        overlay_events::press_end_with_intent(x as i32, y as i32, "ghost_click", &intent);
         return Ok(json!({ "success": true, "x": x, "y": y, "method": "coordinates", "via": via }));
     }
 
@@ -65,12 +67,13 @@ pub async fn ghost_click(params: Value) -> Result<Value> {
                     let count = int_param(&params, "count", 1) as u32;
                     let text = el.text.clone();
                     let plan = plan_click(mode, false, false);
-                    overlay_events::press_start(sx, sy, "ghost_click");
+                    let intent = click_intent(Some(&format!("#{id}")));
+                    overlay_events::press_start_with_intent(sx, sy, "ghost_click", &intent);
                     let via = tokio::task::spawn_blocking(move || {
                         execute_click(sx, sy, button, count, plan)
                     })
                     .await??;
-                    overlay_events::press_end(sx, sy, "ghost_click");
+                    overlay_events::press_end_with_intent(sx, sy, "ghost_click", &intent);
                     return Ok(
                         json!({ "success": true, "x": sx, "y": sy, "element": text, "method": "cdp_dom_id", "via": via }),
                     );
@@ -93,12 +96,13 @@ pub async fn ghost_click(params: Value) -> Result<Value> {
                     let count = int_param(&params, "count", 1) as u32;
                     let text = el.text.clone();
                     let plan = plan_click(mode, false, false);
-                    overlay_events::press_start(sx, sy, "ghost_click");
+                    let intent = click_intent(Some(&format!(".{cls}")));
+                    overlay_events::press_start_with_intent(sx, sy, "ghost_click", &intent);
                     let via = tokio::task::spawn_blocking(move || {
                         execute_click(sx, sy, button, count, plan)
                     })
                     .await??;
-                    overlay_events::press_end(sx, sy, "ghost_click");
+                    overlay_events::press_end_with_intent(sx, sy, "ghost_click", &intent);
                     return Ok(
                         json!({ "success": true, "x": sx, "y": sy, "element": text, "method": "cdp_dom_class", "via": via }),
                     );
@@ -119,11 +123,12 @@ pub async fn ghost_click(params: Value) -> Result<Value> {
             // A real AX element was matched → auto/ax modes press it directly (no
             // cursor warp); the physical-click fallback keeps the cursor courteous.
             let plan = plan_click(mode, true, false);
-            overlay_events::press_start(cx, cy, "ghost_click");
+            let intent = click_intent(Some(query));
+            overlay_events::press_start_with_intent(cx, cy, "ghost_click", &intent);
             let via =
                 tokio::task::spawn_blocking(move || execute_click(cx, cy, button, count, plan))
                     .await??;
-            overlay_events::press_end(cx, cy, "ghost_click");
+            overlay_events::press_end_with_intent(cx, cy, "ghost_click", &intent);
             return Ok(
                 json!({ "success": true, "x": cx, "y": cy, "element": el.title, "method": "ax_query", "via": via }),
             );
@@ -140,11 +145,12 @@ pub async fn ghost_click(params: Value) -> Result<Value> {
                 let button = str_to_button(str_param(&params, "button").unwrap_or("left"));
                 let count = int_param(&params, "count", 1) as u32;
                 let plan = plan_click(mode, false, false);
-                overlay_events::press_start(sx, sy, "ghost_click");
+                let intent = click_intent(Some(query));
+                overlay_events::press_start_with_intent(sx, sy, "ghost_click", &intent);
                 let via =
                     tokio::task::spawn_blocking(move || execute_click(sx, sy, button, count, plan))
                         .await??;
-                overlay_events::press_end(sx, sy, "ghost_click");
+                overlay_events::press_end_with_intent(sx, sy, "ghost_click", &intent);
                 return Ok(
                     json!({ "success": true, "x": sx, "y": sy, "element": el.text, "method": "cdp", "via": via }),
                 );
@@ -585,6 +591,15 @@ fn str_to_button(s: &str) -> MouseButton {
         "right" => MouseButton::Right,
         "middle" => MouseButton::Middle,
         _ => MouseButton::Left,
+    }
+}
+
+/// Keep the overlay label useful without putting the full query or selector in
+/// the action protocol. The overlay applies a final length bound as well.
+fn click_intent(target: Option<&str>) -> String {
+    match target.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(target) => format!("Click “{target}”"),
+        None => "Click".to_owned(),
     }
 }
 

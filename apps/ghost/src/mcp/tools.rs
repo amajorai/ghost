@@ -97,7 +97,7 @@ pub fn definitions() -> Vec<Value> {
 
         // Actions (10)
         tool_rich("ghost_click",
-            "Click an element. Tries AX-native first, falls back to synthetic click. Returns post-click context.",
+            "Click an element. Tries AX-native first, falls back to synthetic click. When Ryu Island is running, shows a click-through ghost cursor with a short target label. Returns post-click context.",
             json!({
                 "type": "object",
                 "properties": {

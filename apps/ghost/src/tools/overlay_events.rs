@@ -41,6 +41,7 @@ fn overlay_url() -> Option<&'static str> {
 /// `type` · `scroll` · `done` (the tool finished).
 #[derive(Debug, Clone, Serialize)]
 pub struct GhostEvent {
+    pub intent: String,
     pub seq: u64,
     pub phase: &'static str,
     pub x: i32,
@@ -50,14 +51,50 @@ pub struct GhostEvent {
 }
 
 /// Build an event with the given fields (pure; used by the golden test).
-fn build_event(seq: u64, phase: &'static str, x: i32, y: i32, tool: &str, ts: u128) -> GhostEvent {
+fn build_event(
+    seq: u64,
+    phase: &'static str,
+    x: i32,
+    y: i32,
+    tool: &str,
+    intent: &str,
+    ts: u128,
+) -> GhostEvent {
     GhostEvent {
+        intent: bounded_intent(intent),
         seq,
         phase,
         x,
         y,
         tool: tool.to_owned(),
         ts,
+    }
+}
+
+const MAX_INTENT_CHARS: usize = 72;
+
+/// Keep the overlay chip readable and prevent an untrusted element name from
+/// turning a click event into a huge always-on-top label.
+fn bounded_intent(intent: &str) -> String {
+    let trimmed = intent.trim();
+    let mut chars = trimmed.chars();
+    let prefix: String = chars.by_ref().take(MAX_INTENT_CHARS - 1).collect();
+    if chars.next().is_some() {
+        format!("{}…", prefix.trim_end())
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+fn default_intent(tool: &str) -> &'static str {
+    match tool {
+        "ghost_click" => "Clicking",
+        "ghost_type" => "Typing",
+        "ghost_scroll" => "Scrolling",
+        "ghost_drag" => "Dragging",
+        "ghost_hover" => "Hovering",
+        "ghost_long_press" => "Holding",
+        _ => "Working",
     }
 }
 
@@ -71,11 +108,16 @@ fn now_millis() -> u128 {
 /// Narrate one input action to the overlay. Fire-and-forget: returns immediately;
 /// the POST is detached and bounded to 200 ms. A no-op when no overlay URL is set.
 pub fn emit(phase: &'static str, x: i32, y: i32, tool: &str) {
+    emit_with_intent(phase, x, y, tool, default_intent(tool));
+}
+
+/// Narrate one input action with a short label shown beside the ghost cursor.
+pub fn emit_with_intent(phase: &'static str, x: i32, y: i32, tool: &str, intent: &str) {
     let Some(url) = overlay_url() else {
         return;
     };
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-    let event = build_event(seq, phase, x, y, tool, now_millis());
+    let event = build_event(seq, phase, x, y, tool, intent, now_millis());
     let Ok(body) = serde_json::to_string(&event) else {
         return;
     };
@@ -89,14 +131,24 @@ pub fn emit(phase: &'static str, x: i32, y: i32, tool: &str) {
 
 /// Narrate the start of a press: the cursor heads to the target, then presses.
 pub fn press_start(x: i32, y: i32, tool: &str) {
-    emit("move", x, y, tool);
-    emit("down", x, y, tool);
+    press_start_with_intent(x, y, tool, default_intent(tool));
+}
+
+/// Narrate the start of a press with a target-aware intent label.
+pub fn press_start_with_intent(x: i32, y: i32, tool: &str, intent: &str) {
+    emit_with_intent("move", x, y, tool, intent);
+    emit_with_intent("down", x, y, tool, intent);
 }
 
 /// Narrate the end of a press: release + the tool finishing.
 pub fn press_end(x: i32, y: i32, tool: &str) {
-    emit("up", x, y, tool);
-    emit("done", x, y, tool);
+    press_end_with_intent(x, y, tool, default_intent(tool));
+}
+
+/// Narrate the end of a press with the same target-aware intent label.
+pub fn press_end_with_intent(x: i32, y: i32, tool: &str, intent: &str) {
+    emit_with_intent("up", x, y, tool, intent);
+    emit_with_intent("done", x, y, tool, intent);
 }
 
 /// Minimal loopback HTTP/1.1 POST — dependency-free (no reqwest in the ghost binary),
@@ -129,7 +181,15 @@ mod tests {
     fn event_payload_shape_is_stable() {
         // Golden: the exact JSON the overlay contract depends on. Fixed seq/ts so the
         // snapshot is deterministic.
-        let event = build_event(7, "down", 512, 384, "ghost_click", 1_700_000_000_000);
+        let event = build_event(
+            7,
+            "down",
+            512,
+            384,
+            "ghost_click",
+            "Click “Save”",
+            1_700_000_000_000,
+        );
         let value = serde_json::to_value(&event).expect("serializes");
         assert_eq!(
             value,
@@ -139,6 +199,7 @@ mod tests {
                 "x": 512,
                 "y": 384,
                 "tool": "ghost_click",
+                "intent": "Click “Save”",
                 "ts": 1_700_000_000_000u128,
             })
         );
@@ -147,10 +208,18 @@ mod tests {
     #[test]
     fn every_phase_serializes_to_its_literal() {
         for phase in ["move", "down", "up", "type", "scroll", "done"] {
-            let event = build_event(0, phase, 0, 0, "ghost_type", 0);
+            let event = build_event(0, phase, 0, 0, "ghost_type", "Typing", 0);
             let value = serde_json::to_value(&event).expect("serializes");
             assert_eq!(value["phase"], serde_json::json!(phase));
         }
+    }
+
+    #[test]
+    fn intent_is_bounded_without_splitting_unicode() {
+        let event = build_event(0, "down", 0, 0, "ghost_click", &"界".repeat(100), 0);
+        let intent = event.intent;
+        assert_eq!(intent.chars().count(), MAX_INTENT_CHARS);
+        assert!(intent.ends_with('…'));
     }
 
     #[test]
