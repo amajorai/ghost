@@ -1,7 +1,8 @@
 [package]
 name = "ghost"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2021"
+license = "Apache-2.0"
 
 [[bin]]
 name = "ghost"
@@ -37,4 +38,3 @@ windows = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
 ] }
-
