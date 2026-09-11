@@ -42,18 +42,17 @@ Screen perception + synthetic input control are exactly what malware wants. Ghos
 the behaviour is auditable, and inside Ryu it runs only behind explicit user consent. If you embed
 it, gate it behind clear consent and treat it as a high-trust dependency. See [SECURITY](./apps/ghost/SECURITY.md).
 
-## Star History
-
-<a href="https://www.star-history.com/?repos=amajorai%2Fghost&type=date&legend=top-left">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=amajorai/ghost&type=date&theme=dark&legend=top-left" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=amajorai/ghost&type=date&legend=top-left" />
-    <img alt="Star History Chart" src="https://api.star-history.com/image?repos=amajorai/ghost&type=date&legend=top-left" />
-  </picture>
-</a>
-
 ## Credits & license
 
 Ghost is derived from [Ghost OS](https://github.com/ghostwright/ghost-os) by Ghostwright (MIT). The
 original copyright + license notice are retained in [NOTICE](./NOTICE). Ghost is licensed under
 **Apache-2.0** (see [LICENSE](./LICENSE)) with MIT-licensed portions per NOTICE. © 2026 A Major Pte. Ltd.
+
+## Star History
+
+<a href="https://github.com/amajorai/ghost/stargazers">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./.github/shieldcn/star-chart-dark.svg" />
+    <img alt="Star history" src="./.github/shieldcn/star-chart-light.svg" />
+  </picture>
+</a>
