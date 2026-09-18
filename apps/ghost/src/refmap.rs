@@ -290,6 +290,9 @@ impl SnapshotStore {
 
     /// Load a snapshot by id.
     pub fn load(&self, id: &str) -> Result<Snapshot> {
+        if !is_valid_snapshot_id(id) {
+            anyhow::bail!("invalid snapshot id")
+        }
         let path = self.dir.join(format!("{id}.json"));
         let data =
             std::fs::read_to_string(&path).with_context(|| format!("Snapshot '{id}' not found"))?;
@@ -321,6 +324,19 @@ impl SnapshotStore {
             let _ = std::fs::remove_file(p);
         }
     }
+}
+
+fn is_valid_snapshot_id(id: &str) -> bool {
+    let Some(body) = id.strip_prefix('s') else {
+        return false;
+    };
+    let Some((timestamp, sequence)) = body.split_once('-') else {
+        return false;
+    };
+    !timestamp.is_empty()
+        && !sequence.is_empty()
+        && timestamp.bytes().all(|byte| byte.is_ascii_digit())
+        && sequence.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 #[cfg(test)]
@@ -485,6 +501,19 @@ mod tests {
             .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
             .count();
         assert_eq!(json_files, MAX_SNAPSHOTS);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn store_rejects_path_like_snapshot_ids() {
+        let tmp = std::env::temp_dir().join(format!("ghost-snap-id-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let store = SnapshotStore::open_at(tmp.clone()).unwrap();
+
+        for id in [".", "..", "../outside", "/tmp/outside", "s123-not-a-sequence"] {
+            assert!(store.load(id).is_err(), "snapshot id {id:?} must be rejected");
+        }
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
