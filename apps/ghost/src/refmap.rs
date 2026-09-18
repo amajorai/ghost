@@ -511,8 +511,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
         let store = SnapshotStore::open_at(tmp.clone()).unwrap();
 
-        for id in [".", "..", "../outside", "/tmp/outside", "s123-not-a-sequence"] {
-            assert!(store.load(id).is_err(), "snapshot id {id:?} must be rejected");
+        for id in [
+            ".",
+            "..",
+            "../outside",
+            "/tmp/outside",
+            "s123-not-a-sequence",
+        ] {
+            assert!(
+                store.load(id).is_err(),
+                "snapshot id {id:?} must be rejected"
+            );
         }
 
         let _ = std::fs::remove_dir_all(&tmp);
