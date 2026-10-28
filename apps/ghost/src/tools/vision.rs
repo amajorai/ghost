@@ -193,7 +193,7 @@ pub async fn ghost_ground(params: Value) -> Result<Value> {
     Ok(json!({
         "found": false,
         "message": "No accessibility element matched the description. Build with --features ort \
-                    (ShowUI-2B at ~/.ghost/models/showui-2b.onnx) for vision-based grounding of \
+                    (ShowUI-2B at <data dir>/models/vision/ghost/showui-2b.onnx) for vision-based grounding of \
                     elements the AX tree does not expose.",
         "suggestion": "Call ghost_parse_screen or ghost_annotate to see what elements are available, \
                        then ghost_click the one you want.",

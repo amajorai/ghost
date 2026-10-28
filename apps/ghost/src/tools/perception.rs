@@ -6,7 +6,7 @@ use ghost_eyes::{
     quick_screenshot, AXTree, AXTreeNode, PlatformAXTree, PlatformWindowTracker, WindowTracker,
 };
 
-use super::{bool_param, int_param, str_param};
+use super::{bool_param, int_param, required_query, str_param};
 
 pub async fn ghost_context(params: Value) -> Result<Value> {
     let _app = str_param(&params, "app");
@@ -147,8 +147,6 @@ pub async fn ghost_read(params: Value) -> Result<Value> {
 }
 
 pub async fn ghost_inspect(params: Value) -> Result<Value> {
-    let query = str_param(&params, "query").unwrap_or("");
-
     // dom_id: CDP #id lookup
     let dom_id = str_param(&params, "dom_id");
     if let Some(id) = &dom_id {
@@ -181,6 +179,8 @@ pub async fn ghost_inspect(params: Value) -> Result<Value> {
         }
     }
 
+    // A blank query would match the root AX node and report the whole window.
+    let query = required_query(&params, "query or dom_id/dom_class")?;
     let ax = PlatformAXTree::new()?;
     let element = ax.find_element(query).await;
 

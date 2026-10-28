@@ -29,8 +29,31 @@ enum Commands {
     Setup,
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    // Take a Core-delivered sealing key (RYU_SEAL_KEY / RYU_SEAL_SCOPE) out of the
+    // environment before any thread starts, so no child Ghost spawns inherits it.
+    // Ghost seals its accessibility snapshots with this key (`refmap::SnapshotStore`).
+    let seal_key_error = ryu_crypto::capture_process_seal_key().err();
+    // Resolve Ghost's key before the scrub below: without a delivered key it is
+    // derived from RYU_MASTER_KEY, which is one of the variables removed next.
+    refmap::resolve_process_cipher();
+    for name in ryu_crypto::SEAL_ENV_VARS {
+        std::env::remove_var(name);
+    }
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("ghost: could not start the async runtime: {error}");
+            std::process::exit(1);
+        }
+    };
+    runtime.block_on(async_main(seal_key_error));
+}
+
+async fn async_main(seal_key_error: Option<anyhow::Error>) {
     // Initialize tracing to stderr so MCP stdout stays clean.
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -40,9 +63,38 @@ async fn main() {
         )
         .init();
 
+    if let Some(error) = seal_key_error {
+        tracing::warn!("ghost: ignoring a malformed sealing key delivery: {error}");
+    }
+
     let cli = Cli::parse();
+    // Plaintext snapshot files from earlier builds go now, not on the first
+    // snapshot call, which may never come.
+    refmap::remove_legacy_snapshots_at_startup();
+    // Raw macOS capture frames go to an owner-only scratch dir under the data dir
+    // (cleared here of crash orphans), never the system temp dir; frames earlier
+    // builds left in temp are deleted.
+    let capture_scratch =
+        ryu_sidecar_runtime::layout::tmp_dir_for(&ryu_sidecar_runtime::ryu_dir(), "ghost");
+    match ghost_eyes::capture_scratch::set_scratch_dir(capture_scratch) {
+        Ok(()) => {
+            ghost_eyes::capture_scratch::remove_legacy_temp_captures();
+        }
+        Err(error) => tracing::warn!("ghost: could not prepare the capture scratch dir: {error}"),
+    }
     match cli.command {
-        Commands::Mcp => mcp::server::run().await,
+        Commands::Mcp => {
+            // Expired sealed snapshots go at startup and then every minute while
+            // the server runs, not only when a snapshot tool is next called.
+            tokio::spawn(async {
+                let mut interval = tokio::time::interval(refmap::SNAPSHOT_PRUNE_INTERVAL);
+                loop {
+                    interval.tick().await;
+                    let _ = tokio::task::spawn_blocking(refmap::prune_expired_snapshots).await;
+                }
+            });
+            mcp::server::run().await;
+        }
         Commands::Version => println!("ghost {}", env!("CARGO_PKG_VERSION")),
         Commands::Doctor => run_doctor().await,
         Commands::Setup => run_setup(),
@@ -52,57 +104,52 @@ async fn main() {
 /// Request every permission Ghost needs, surfacing the macOS system prompts. Each
 /// request registers the binary in the matching System Settings pane; a freshly
 /// granted permission only takes effect after Ghost is restarted.
+fn setup_guidance(os: &str) -> &'static str {
+    match os {
+        "macos" => "Enable the responsible host application under System Settings > Privacy & Security, then restart Ghost and its host. Verify with: ghost doctor",
+        "linux" => "Native screen capture and global automation require an X11 session. Input learning also needs readable keyboard/mouse devices. Wayland portal capture is not supported by this backend. Verify with: ghost doctor",
+        "windows" => "No macOS-style grants are required. Elevated target windows can require additional privileges. Verify with: ghost doctor",
+        _ => "Check your host's capture and automation support. Verify with: ghost doctor",
+    }
+}
+
 fn run_setup() {
-    println!("Ghost Setup — requesting permissions\n");
-
-    let ax = ghost_permissions::request_accessibility();
-    println!(
-        "[{}] Accessibility: {}",
-        if ax { "OK" } else { "  " },
-        if ax {
-            "granted"
+    println!("Ghost Setup — checking device access\n");
+    for capability in ghost_permissions::ALL {
+        let granted = ghost_permissions::request(capability);
+        let status = if granted {
+            if ghost_permissions::required(capability) {
+                "granted"
+            } else {
+                "no OS prompt required"
+            }
+        } else if std::env::consts::OS == "macos" {
+            "not granted — review the responsible application in System Settings"
         } else {
-            "prompt requested — enable Ghost in the pane that opened"
-        }
-    );
-
-    let screen = ghost_permissions::request_screen_recording();
-    println!(
-        "[{}] Screen Recording: {}",
-        if screen { "OK" } else { "  " },
-        if screen {
-            "granted"
-        } else {
-            "prompt requested — enable Ghost in the pane that opened"
-        }
-    );
-
-    let input = ghost_permissions::request_input_monitoring();
-    println!(
-        "[{}] Input Monitoring: {}",
-        if input { "OK" } else { "  " },
-        if input {
-            "granted"
-        } else {
-            "prompt requested — enable Ghost in the pane that opened"
-        }
-    );
-
-    println!();
-    if ax && screen && input {
-        println!("All permissions granted. Ghost is ready.");
-    } else {
+            "unavailable — check session and device access"
+        };
         println!(
-            "Enable Ghost under System Settings > Privacy & Security for anything not yet \
-             granted, then fully restart Ghost (and the MCP client that launched it) for the \
-             grant to apply. Verify with: ghost doctor"
+            "[{}] {}: {}",
+            if granted { "OK" } else { "  " },
+            capability.label(),
+            status
         );
     }
+    println!("\n{}", setup_guidance(std::env::consts::OS));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setup_instructions_name_the_platforms_actual_gates() {
+        assert!(setup_guidance("macos").contains("responsible host application"));
+        assert!(setup_guidance("linux").contains("readable keyboard/mouse devices"));
+        assert!(setup_guidance("linux").contains("Wayland portal capture is not supported"));
+        assert!(!setup_guidance("linux").contains("System Settings"));
+        assert!(setup_guidance("windows").contains("Elevated target windows"));
+    }
 
     #[test]
     fn each_subcommand_parses_to_its_variant() {
@@ -194,11 +241,7 @@ async fn run_doctor() {
     );
 
     // 5. ShowUI-2B model file
-    let model_path = dirs::home_dir()
-        .unwrap_or_default()
-        .join(".ghost")
-        .join("models")
-        .join("showui-2b.onnx");
+    let model_path = ghost_core::paths::showui_model_path();
     let model_ok = model_path.exists();
     println!(
         "[{}] ShowUI-2B model ({}): {}",
@@ -217,8 +260,9 @@ async fn run_doctor() {
         .map(|v| v.len())
         .unwrap_or(0);
     println!(
-        "[OK] Recipes: {} loaded from ~/.ghost/recipes/",
-        recipe_count
+        "[OK] Recipes: {} loaded from {}",
+        recipe_count,
+        ghost_core::paths::recipes_dir().display()
     );
 
     println!();

@@ -28,7 +28,7 @@ cargo build --release --features ort
 ./target/release/ghost          # a stdio MCP server — speaks JSON-RPC on stdin/stdout
 ```
 
-Ghost is a stdio MCP server, so it has no network port. Launch it from any MCP-capable client (or let Ryu Core spawn it as a sidecar). Configuration and cache live under `~/.ghost/`.
+Ghost is a stdio MCP server, so it has no network port. Launch it from any MCP-capable client (or let Ryu Core spawn it as a sidecar). Configuration and cache live under the Ryu data dir: `services/ghost/` (recipes, snapshots) and `models/vision/ghost/` (the vision model).
 
 ## What it does
 

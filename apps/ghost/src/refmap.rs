@@ -2,18 +2,17 @@
 //
 // Ported in spirit from lahfir/agent-desktop's snapshot/ref system: a `ghost_snapshot`
 // captures the focused accessibility tree once, assigns stable `@eN` references to its
-// interactive/named nodes in depth-first order, and persists the whole walked tree to
-// `~/.ghost/snapshots/`. Subsequent action tools (`ghost_click`/`ghost_type`) then act on
-// `@eN` instead of re-describing the element, which cuts token usage on dense apps and
-// makes targeting deterministic. Refs survive across process boundaries (Core spawns
-// ghost one-shot, so an in-memory map would vanish between `snapshot` and `click`).
+// interactive/named nodes in depth-first order, and keeps the whole walked tree sealed
+// under Ghost's component key (the tree is on-screen text and field values; see
+// `SnapshotStore`), so the next per-call `ghost mcp` process can resolve its refs. Subsequent action tools (`ghost_click`/`ghost_type`)
+// then act on `@eN` instead of re-describing the element, which cuts token usage on dense
+// apps and makes targeting deterministic.
 //
 // Re-identification is optimistic: when an action resolves a ref, ghost re-captures the
 // focused tree and finds the node matching (role, name), preferring an exact `Bounds`
 // match. If the focused app's pid no longer matches the snapshot, or no candidate is
 // found, the action fails with a `STALE_REF` error telling the agent to re-snapshot.
 
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
@@ -22,7 +21,7 @@ use serde_json::{json, Value};
 
 use ghost_eyes::{AXTreeNode, Bounds};
 
-/// How many snapshots to retain on disk.
+/// How many snapshots to keep.
 const MAX_SNAPSHOTS: usize = 10;
 
 /// Monotonic per-process counter so two snapshots in the same millisecond get distinct ids.
@@ -47,7 +46,7 @@ pub struct SkeletonNode {
     pub children: Vec<SkeletonNode>,
 }
 
-/// A persisted snapshot: the captured tree plus the app/pid it was taken from.
+/// A captured snapshot: the tree plus the app/pid it was taken from.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     pub id: String,
@@ -61,8 +60,10 @@ pub struct Snapshot {
 impl Snapshot {
     /// Build a snapshot from a freshly captured AX tree, assigning `@eN` refs DFS.
     pub fn build(root: &AXTreeNode, app: Option<String>, pid: i32, now_ms: i64) -> Self {
+        // The process id keeps ids unique across the per-call Ghost processes
+        // that share the sealed snapshot directory.
         let seq = SNAPSHOT_SEQ.fetch_add(1, Ordering::Relaxed);
-        let id = format!("s{now_ms}-{seq}");
+        let id = format!("s{now_ms}-{}{seq:06}", std::process::id());
         let mut counter: u32 = 0;
         let tree = build_node(root, &mut counter);
         Self {
@@ -254,76 +255,419 @@ fn collect_matches<'a>(
     }
 }
 
-// ─── Disk store ────────────────────────────────────────────────────────────────
+// ─── Snapshot store (sealed files, memory without a key) ───────────────────────
 
-/// Persistent snapshot store backed by JSON files in `~/.ghost/snapshots/`.
+/// How long a snapshot stays usable. A snapshot only has to outlive the few tool
+/// calls that act on its refs; after that it is stale screen content.
+const SNAPSHOT_TTL_MS: i64 = 10 * 60 * 1000;
+
+/// Content store name of sealed snapshots (KDF input: never rename).
+const SNAPSHOT_STORE: &str = "ghost-snapshots";
+/// AAD purpose of one sealed snapshot; the snapshot id is bound in as well.
+const SNAPSHOT_PURPOSE: &str = "ghost-snapshot";
+/// File extension of a sealed snapshot (`<id>.snap`).
+const SNAPSHOT_EXT: &str = "snap";
+/// A temp file older than this is a crashed write and is removed.
+const STALE_TEMP_MS: u128 = 60 * 1000;
+
+#[derive(Default)]
+struct MemoryState {
+    /// Oldest first; ids are chronological (`s<millis>-<seq>`).
+    snapshots: Vec<(i64, Snapshot)>,
+    latest: Option<String>,
+}
+
+/// Process-wide fallback state, used only when Ghost has no sealing key.
+static MEMORY: std::sync::OnceLock<std::sync::Mutex<MemoryState>> = std::sync::OnceLock::new();
+
+/// What a sealed snapshot file holds once opened.
+#[derive(Serialize, Deserialize)]
+struct StoredSnapshot {
+    saved_ms: i64,
+    snapshot: Snapshot,
+}
+
+enum Backend {
+    /// One `RYU-CB01` file per snapshot under Ghost's component subkey, bound to
+    /// the snapshot id. Shared by every Ghost process of this data dir, so a
+    /// snapshot taken by one per-call `ghost mcp` resolves refs in the next.
+    Sealed {
+        dir: std::path::PathBuf,
+        cipher: ryu_crypto::ContentCipher,
+    },
+    /// No key: the snapshot lives only in this process and is never written.
+    Memory(&'static std::sync::Mutex<MemoryState>),
+}
+
+/// Ghost's sealing cipher, resolved once per process.
+static PROCESS_CIPHER: std::sync::OnceLock<Result<ryu_crypto::ComponentCipher, String>> =
+    std::sync::OnceLock::new();
+
+fn process_cipher() -> &'static Result<ryu_crypto::ComponentCipher, String> {
+    PROCESS_CIPHER.get_or_init(|| {
+        ryu_crypto::component_cipher_for_process(ryu_crypto::components::GHOST)
+            .map_err(|error| format!("{error:#}"))
+    })
+}
+
+/// Resolve Ghost's sealing key now. `main` calls this after taking a delivered
+/// `RYU_SEAL_KEY` and before it scrubs `RYU_MASTER_KEY` from the environment, so a
+/// Ghost started outside Core with only the master key still seals its snapshots.
+pub fn resolve_process_cipher() {
+    let _ = process_cipher();
+}
+
+/// Snapshot store. Snapshots hold the accessibility tree of the focused window
+/// (visible text and field values). With Ghost's sealing key (delivered by Core,
+/// or derived from `RYU_MASTER_KEY`) each snapshot is sealed to
+/// `services/ghost/snapshots/<id>.snap` (0700 dir, 0600 files); without one it is
+/// kept in this process's memory only and never written. Either way at most
+/// [`MAX_SNAPSHOTS`] are kept, for at most [`SNAPSHOT_TTL_MS`], pruned on every
+/// use. Plaintext snapshot files left by earlier builds are deleted at startup.
 pub struct SnapshotStore {
-    dir: PathBuf,
+    backend: Backend,
 }
 
 impl SnapshotStore {
     pub fn open() -> Result<Self> {
-        let dir = dirs::home_dir()
-            .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
-            .join(".ghost")
-            .join("snapshots");
-        std::fs::create_dir_all(&dir)
-            .with_context(|| format!("Failed to create snapshot dir: {}", dir.display()))?;
-        Ok(Self { dir })
+        static LEGACY_SWEEP: std::sync::Once = std::sync::Once::new();
+        let dir = ghost_core::paths::snapshots_dir();
+        LEGACY_SWEEP.call_once(|| remove_legacy_snapshot_files(&dir));
+        let cipher = match process_cipher() {
+            Ok(cipher) => Some(cipher.content_cipher(SNAPSHOT_STORE)),
+            Err(error) => {
+                static WARNED: std::sync::Once = std::sync::Once::new();
+                WARNED.call_once(|| {
+                    tracing::warn!(
+                        "ghost: no sealing key ({error}); snapshots stay in this process only"
+                    );
+                });
+                None
+            }
+        };
+        Ok(Self::with_backend(cipher, dir))
+    }
+
+    fn with_backend(cipher: Option<ryu_crypto::ContentCipher>, dir: std::path::PathBuf) -> Self {
+        let backend = match cipher {
+            Some(cipher) => Backend::Sealed { dir, cipher },
+            None => Backend::Memory(MEMORY.get_or_init(Default::default)),
+        };
+        Self { backend }
     }
 
     #[cfg(test)]
-    pub fn open_at(dir: PathBuf) -> Result<Self> {
-        std::fs::create_dir_all(&dir)?;
-        Ok(Self { dir })
+    fn isolated() -> Self {
+        Self {
+            backend: Backend::Memory(Box::leak(Box::default())),
+        }
     }
 
-    /// Persist a snapshot, update the `latest` pointer, and prune old ones.
+    #[cfg(test)]
+    fn sealed_at(dir: &std::path::Path, root: &[u8; 32]) -> Self {
+        Self {
+            backend: Backend::Sealed {
+                dir: dir.to_path_buf(),
+                cipher: ryu_crypto::ContentCipher::from_root(root, SNAPSHOT_STORE),
+            },
+        }
+    }
+
+    /// Keep a snapshot, make it the latest, and drop expired or excess ones.
     pub fn save(&self, snapshot: &Snapshot) -> Result<()> {
-        let path = self.dir.join(format!("{}.json", snapshot.id));
-        std::fs::write(&path, serde_json::to_string(snapshot)?)
-            .with_context(|| format!("Failed to write snapshot {}", path.display()))?;
-        std::fs::write(self.dir.join("latest"), &snapshot.id)?;
-        self.prune();
-        Ok(())
+        self.save_at(snapshot, now_ms())
+    }
+
+    fn save_at(&self, snapshot: &Snapshot, now: i64) -> Result<()> {
+        if !is_valid_snapshot_id(&snapshot.id) {
+            anyhow::bail!("invalid snapshot id")
+        }
+        match &self.backend {
+            Backend::Memory(state) => {
+                let mut state = lock(state);
+                state.snapshots.retain(|(_, s)| s.id != snapshot.id);
+                state.snapshots.push((now, snapshot.clone()));
+                state.latest = Some(snapshot.id.clone());
+                prune_memory(&mut state, now);
+                Ok(())
+            }
+            Backend::Sealed { dir, cipher } => {
+                ensure_private_dir(dir)?;
+                let payload = serde_json::to_vec(&StoredSnapshot {
+                    saved_ms: now,
+                    snapshot: snapshot.clone(),
+                })?;
+                let sealed = cipher
+                    .seal_bytes(&payload, &snapshot_context(&snapshot.id))
+                    .context("sealing the snapshot")?;
+                write_private_atomically(dir, &snapshot.id, &sealed)?;
+                prune_sealed(dir, cipher, now);
+                Ok(())
+            }
+        }
     }
 
     /// Load a snapshot by id.
     pub fn load(&self, id: &str) -> Result<Snapshot> {
+        self.load_at(id, now_ms())
+    }
+
+    fn load_at(&self, id: &str, now: i64) -> Result<Snapshot> {
         if !is_valid_snapshot_id(id) {
             anyhow::bail!("invalid snapshot id")
         }
-        let path = self.dir.join(format!("{id}.json"));
-        let data =
-            std::fs::read_to_string(&path).with_context(|| format!("Snapshot '{id}' not found"))?;
-        serde_json::from_str(&data).with_context(|| format!("Invalid snapshot JSON in {id}"))
+        let found = match &self.backend {
+            Backend::Memory(state) => {
+                let mut state = lock(state);
+                prune_memory(&mut state, now);
+                state
+                    .snapshots
+                    .iter()
+                    .find(|(_, s)| s.id == id)
+                    .map(|(_, s)| s.clone())
+            }
+            Backend::Sealed { dir, cipher } => prune_sealed(dir, cipher, now)
+                .into_iter()
+                .find(|(_, s)| s.id == id)
+                .map(|(_, s)| s),
+        };
+        found.with_context(|| {
+            format!("Snapshot '{id}' not found or expired; run ghost_snapshot again")
+        })
     }
 
     /// Load the most recently saved snapshot.
     pub fn load_latest(&self) -> Result<Snapshot> {
-        let id = std::fs::read_to_string(self.dir.join("latest"))
-            .context("No snapshot yet — run ghost_snapshot first")?;
-        self.load(id.trim())
+        self.load_latest_at(now_ms())
     }
 
-    fn prune(&self) {
-        let mut ids: Vec<PathBuf> = match std::fs::read_dir(&self.dir) {
-            Ok(rd) => rd
-                .filter_map(|e| e.ok().map(|e| e.path()))
-                .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
-                .collect(),
-            Err(_) => return,
+    fn load_latest_at(&self, now: i64) -> Result<Snapshot> {
+        let latest = match &self.backend {
+            Backend::Memory(state) => {
+                let mut state = lock(state);
+                prune_memory(&mut state, now);
+                let id = state.latest.clone();
+                id.and_then(|id| {
+                    state
+                        .snapshots
+                        .iter()
+                        .find(|(_, s)| s.id == id)
+                        .map(|(_, s)| s.clone())
+                })
+            }
+            Backend::Sealed { dir, cipher } => prune_sealed(dir, cipher, now).pop().map(|(_, s)| s),
         };
-        if ids.len() <= MAX_SNAPSHOTS {
-            return;
-        }
-        // Filenames are `s<millis>-<seq>.json`, so lexicographic sort is chronological.
-        ids.sort();
-        let remove = ids.len() - MAX_SNAPSHOTS;
-        for p in ids.into_iter().take(remove) {
-            let _ = std::fs::remove_file(p);
+        latest.context("No snapshot yet — run ghost_snapshot first")
+    }
+
+    /// Delete expired, unreadable and excess snapshots without loading one, so
+    /// the ten-minute retention holds even when no snapshot tool is called.
+    pub fn prune_expired(&self) {
+        self.prune_expired_at(now_ms());
+    }
+
+    fn prune_expired_at(&self, now: i64) {
+        match &self.backend {
+            Backend::Memory(state) => prune_memory(&mut lock(state), now),
+            Backend::Sealed { dir, cipher } => {
+                prune_sealed(dir, cipher, now);
+            }
         }
     }
+}
+
+/// How often the long-lived `ghost mcp` server deletes expired snapshots.
+pub const SNAPSHOT_PRUNE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Delete expired snapshot files now (startup and the periodic sweep).
+pub fn prune_expired_snapshots() {
+    match SnapshotStore::open() {
+        Ok(store) => store.prune_expired(),
+        Err(error) => tracing::warn!("ghost: could not open the snapshot store: {error:#}"),
+    }
+}
+
+fn lock(state: &std::sync::Mutex<MemoryState>) -> std::sync::MutexGuard<'_, MemoryState> {
+    state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+fn snapshot_context(id: &str) -> ryu_crypto::ContentContext {
+    ryu_crypto::ContentContext::for_id(SNAPSHOT_PURPOSE, id)
+}
+
+/// Whether a snapshot saved at `saved` is still usable at `now`.
+fn is_fresh(saved: i64, now: i64) -> bool {
+    now.saturating_sub(saved) <= SNAPSHOT_TTL_MS
+}
+
+/// Drop snapshots older than the TTL, then the oldest beyond the cap.
+fn prune_memory(state: &mut MemoryState, now: i64) {
+    state.snapshots.retain(|(saved, _)| is_fresh(*saved, now));
+    if state.snapshots.len() > MAX_SNAPSHOTS {
+        let excess = state.snapshots.len() - MAX_SNAPSHOTS;
+        state.snapshots.drain(..excess);
+    }
+    if let Some(latest) = &state.latest {
+        if !state.snapshots.iter().any(|(_, s)| &s.id == latest) {
+            state.latest = None;
+        }
+    }
+}
+
+/// Open every sealed snapshot in `dir`, delete the expired, unreadable (wrong
+/// key, tampered, plaintext) and excess ones plus crashed temp files, and return
+/// the rest oldest first.
+fn prune_sealed(
+    dir: &std::path::Path,
+    cipher: &ryu_crypto::ContentCipher,
+    now: i64,
+) -> Vec<(i64, Snapshot)> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut kept: Vec<(i64, Snapshot, std::path::PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') && name.contains(".tmp-") {
+            let stale = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|modified| modified.elapsed().ok())
+                .is_none_or(|age| age.as_millis() > STALE_TEMP_MS);
+            if stale {
+                remove_quietly(&path);
+            }
+            continue;
+        }
+        let Some(id) = name
+            .strip_suffix(SNAPSHOT_EXT)
+            .and_then(|stem| stem.strip_suffix('.'))
+            .filter(|id| is_valid_snapshot_id(id))
+        else {
+            continue;
+        };
+        match open_sealed_snapshot(&path, id, cipher) {
+            Some(stored) if is_fresh(stored.saved_ms, now) => {
+                kept.push((stored.saved_ms, stored.snapshot, path));
+            }
+            _ => remove_quietly(&path),
+        }
+    }
+    kept.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.id.cmp(&b.1.id)));
+    if kept.len() > MAX_SNAPSHOTS {
+        let excess = kept.len() - MAX_SNAPSHOTS;
+        for (_, _, path) in kept.drain(..excess) {
+            remove_quietly(&path);
+        }
+    }
+    kept.into_iter()
+        .map(|(saved, snapshot, _)| (saved, snapshot))
+        .collect()
+}
+
+/// Open one sealed snapshot file; `None` unless it is sealed, opens under this
+/// key for this id, and parses.
+fn open_sealed_snapshot(
+    path: &std::path::Path,
+    id: &str,
+    cipher: &ryu_crypto::ContentCipher,
+) -> Option<StoredSnapshot> {
+    let bytes = std::fs::read(path).ok()?;
+    if !ryu_crypto::ContentCipher::is_sealed_bytes(&bytes) {
+        return None;
+    }
+    let opened = cipher.open_bytes(&bytes, &snapshot_context(id)).ok()?;
+    let stored: StoredSnapshot = serde_json::from_slice(&opened.value).ok()?;
+    (stored.snapshot.id == id).then_some(stored)
+}
+
+fn remove_quietly(path: &std::path::Path) {
+    if let Err(error) = std::fs::remove_file(path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!("ghost: could not delete a snapshot file: {error}");
+        }
+    }
+}
+
+/// Create `dir` (0700 on Unix) if needed and tighten an existing one.
+fn ensure_private_dir(dir: &std::path::Path) -> Result<()> {
+    std::fs::create_dir_all(dir).context("creating the snapshot directory")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .context("restricting the snapshot directory")?;
+    }
+    Ok(())
+}
+
+/// Write `<dir>/<id>.snap` through a 0600 temp file and a rename, so a reader
+/// never sees a partial file.
+fn write_private_atomically(dir: &std::path::Path, id: &str, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let seq = SNAPSHOT_SEQ.fetch_add(1, Ordering::Relaxed);
+    let temp = dir.join(format!(".{id}.tmp-{}-{seq}", std::process::id()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let result = (|| -> Result<()> {
+        let mut file = options
+            .open(&temp)
+            .context("creating a snapshot temp file")?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        std::fs::rename(&temp, dir.join(format!("{id}.{SNAPSHOT_EXT}")))
+            .context("publishing the sealed snapshot")?;
+        Ok(())
+    })();
+    if result.is_err() {
+        remove_quietly(&temp);
+    }
+    result
+}
+
+/// Startup cleanup: delete plaintext snapshot files earlier builds left in
+/// Ghost's data dir, whether or not a snapshot tool is ever called.
+pub fn remove_legacy_snapshots_at_startup() {
+    remove_legacy_snapshots_in(&ghost_core::paths::snapshots_dir());
+}
+
+fn remove_legacy_snapshots_in(dir: &std::path::Path) {
+    remove_legacy_snapshot_files(dir);
+}
+
+/// Delete plaintext snapshot files an earlier build persisted (`<id>.json` and
+/// the `latest` pointer), then the directory when it is empty.
+fn remove_legacy_snapshot_files(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let legacy =
+            name == "latest" || name.strip_suffix(".json").is_some_and(is_valid_snapshot_id);
+        if legacy {
+            if let Err(error) = std::fs::remove_file(&path) {
+                tracing::warn!("ghost: could not delete an old snapshot file: {error}");
+            }
+        }
+    }
+    let _ = std::fs::remove_dir(dir);
 }
 
 fn is_valid_snapshot_id(id: &str) -> bool {
@@ -480,36 +824,234 @@ mod tests {
 
     #[test]
     fn store_round_trip_and_prune() {
-        let tmp = std::env::temp_dir().join(format!("ghost-snap-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        let store = SnapshotStore::open_at(tmp.clone()).unwrap();
+        let store = SnapshotStore::isolated();
 
         let mut last_id = String::new();
+        let mut first_id = String::new();
         for i in 0..(MAX_SNAPSHOTS + 5) {
             let snap = Snapshot::build(&sample(), None, 1, 1000 + i as i64);
-            store.save(&snap).unwrap();
+            if i == 0 {
+                first_id = snap.id.clone();
+            }
+            store.save_at(&snap, 1000 + i as i64).unwrap();
             last_id = snap.id;
         }
+        let now = 1000 + MAX_SNAPSHOTS as i64 + 5;
         // latest pointer resolves to the final save.
-        let latest = store.load_latest().unwrap();
+        let latest = store.load_latest_at(now).unwrap();
         assert_eq!(latest.id, last_id);
 
-        // Pruned to the cap.
-        let json_files = std::fs::read_dir(&tmp)
-            .unwrap()
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
-            .count();
-        assert_eq!(json_files, MAX_SNAPSHOTS);
+        // Pruned to the cap: the oldest is gone.
+        let Backend::Memory(state) = &store.backend else {
+            panic!("isolated store is in memory")
+        };
+        assert_eq!(lock(state).snapshots.len(), MAX_SNAPSHOTS);
+        assert!(store.load_at(&first_id, now).is_err());
+    }
 
+    #[test]
+    fn snapshots_expire_after_the_ttl() {
+        let store = SnapshotStore::isolated();
+        let snap = Snapshot::build(&sample(), None, 1, 5000);
+        store.save_at(&snap, 5000).unwrap();
+        assert!(store.load_at(&snap.id, 5000 + SNAPSHOT_TTL_MS).is_ok());
+        assert!(store.load_at(&snap.id, 5001 + SNAPSHOT_TTL_MS).is_err());
+        assert!(store.load_latest_at(5001 + SNAPSHOT_TTL_MS).is_err());
+    }
+
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ghost-{label}-{}-{}",
+            std::process::id(),
+            SNAPSHOT_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    const KEY: [u8; 32] = [7; 32];
+
+    #[test]
+    fn a_sealed_snapshot_resolves_refs_in_a_fresh_store() {
+        let tmp = temp_dir("sealed-cross");
+        let dir = tmp.join("snapshots");
+        let snap = Snapshot::build(&sample(), Some("Mail".into()), 42, 1_000);
+        // The process that ran ghost_snapshot.
+        SnapshotStore::sealed_at(&dir, &KEY)
+            .save_at(&snap, 1_000)
+            .unwrap();
+
+        // A later per-call Ghost process: nothing shared but the directory.
+        let next = SnapshotStore::sealed_at(&dir, &KEY);
+        let latest = next.load_latest_at(2_000).unwrap();
+        assert_eq!(latest.id, snap.id);
+        let cancel = latest.find_ref("@e3").expect("@e3 survives the process");
+        assert_eq!(cancel.name.as_deref(), Some("Cancel"));
+        assert_eq!(
+            next.load_at(&snap.id, 2_000).unwrap().app.as_deref(),
+            Some("Mail")
+        );
+
+        // On disk: one content envelope, no on-screen text, owner-only modes.
+        let file = dir.join(format!("{}.snap", snap.id));
+        let bytes = std::fs::read(&file).unwrap();
+        assert!(ryu_crypto::ContentCipher::is_sealed_bytes(&bytes));
+        for needle in ["Cancel", "Search", "Mail", "textfield"] {
+            assert!(
+                !bytes.windows(needle.len()).any(|w| w == needle.as_bytes()),
+                "{needle} must not be on disk in plaintext"
+            );
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode =
+                |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&dir), 0o700);
+            assert_eq!(mode(&file), 0o600);
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn sealed_snapshots_expire_and_are_capped_on_disk() {
+        let tmp = temp_dir("sealed-prune");
+        let dir = tmp.join("snapshots");
+        let store = SnapshotStore::sealed_at(&dir, &KEY);
+        let mut ids = Vec::new();
+        for i in 0..(MAX_SNAPSHOTS + 3) {
+            let snap = Snapshot::build(&sample(), None, 1, 10_000 + i as i64);
+            store.save_at(&snap, 10_000 + i as i64).unwrap();
+            ids.push(snap.id);
+        }
+        let count = || {
+            std::fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().ends_with(".snap"))
+                .count()
+        };
+        assert_eq!(count(), MAX_SNAPSHOTS);
+        assert!(store.load_at(&ids[0], 10_020).is_err());
+        assert_eq!(
+            store.load_latest_at(10_020).unwrap().id,
+            *ids.last().unwrap()
+        );
+        // Past the TTL every file is deleted on the next use.
+        let late = 10_000 + MAX_SNAPSHOTS as i64 + 3 + SNAPSHOT_TTL_MS;
+        assert!(store.load_latest_at(late).is_err());
+        assert_eq!(count(), 0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn expired_sealed_snapshots_are_deleted_without_a_snapshot_call() {
+        let tmp = temp_dir("sealed-sweep");
+        let dir = tmp.join("snapshots");
+        let snap = Snapshot::build(&sample(), None, 1, 20_000);
+        SnapshotStore::sealed_at(&dir, &KEY)
+            .save_at(&snap, 20_000)
+            .unwrap();
+        let file = dir.join(format!("{}.snap", snap.id));
+        // A fresh process sweeping before expiry keeps the snapshot.
+        SnapshotStore::sealed_at(&dir, &KEY).prune_expired_at(20_000 + SNAPSHOT_TTL_MS);
+        assert!(file.exists());
+        // The sweep after expiry deletes it with no load or save.
+        SnapshotStore::sealed_at(&dir, &KEY).prune_expired_at(20_001 + SNAPSHOT_TTL_MS);
+        assert!(!file.exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn snapshots_under_another_key_or_in_plaintext_are_not_loaded() {
+        let tmp = temp_dir("sealed-foreign");
+        let dir = tmp.join("snapshots");
+        let snap = Snapshot::build(&sample(), None, 1, 1_000);
+        SnapshotStore::sealed_at(&dir, &[9; 32])
+            .save_at(&snap, 1_000)
+            .unwrap();
+        let plain = Snapshot::build(&sample(), None, 1, 1_001);
+        std::fs::write(
+            dir.join(format!("{}.snap", plain.id)),
+            serde_json::to_vec(&StoredSnapshot {
+                saved_ms: 1_001,
+                snapshot: plain.clone(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let store = SnapshotStore::sealed_at(&dir, &KEY);
+        assert!(store.load_latest_at(1_500).is_err());
+        assert!(store.load_at(&plain.id, 1_500).is_err());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_sealed_file_renamed_to_another_id_does_not_open() {
+        let tmp = temp_dir("sealed-rename");
+        let dir = tmp.join("snapshots");
+        let store = SnapshotStore::sealed_at(&dir, &KEY);
+        let snap = Snapshot::build(&sample(), None, 1, 1_000);
+        store.save_at(&snap, 1_000).unwrap();
+        let other = "s999-1";
+        std::fs::rename(
+            dir.join(format!("{}.snap", snap.id)),
+            dir.join(format!("{other}.snap")),
+        )
+        .unwrap();
+        assert!(store.load_at(other, 1_500).is_err());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn without_a_key_snapshots_stay_in_memory() {
+        let tmp = temp_dir("no-key");
+        let dir = tmp.join("snapshots");
+        let store = SnapshotStore::with_backend(None, dir.clone());
+        let snap = Snapshot::build(&sample(), None, 1, now_ms());
+        store.save(&snap).unwrap();
+        assert_eq!(store.load(&snap.id).unwrap().id, snap.id);
+        assert!(!dir.exists(), "nothing is written without a key");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn startup_cleanup_removes_legacy_files_without_a_snapshot_call() {
+        let tmp = temp_dir("startup-legacy");
+        let dir = tmp.join("snapshots");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("s1000-1.json"), r#"{"secret":"typed text"}"#).unwrap();
+        std::fs::write(dir.join("latest"), "s1000-1").unwrap();
+        // The function `main` runs before dispatching any command.
+        remove_legacy_snapshots_in(&dir);
+        assert!(!dir.exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn legacy_snapshot_files_are_deleted() {
+        let tmp = std::env::temp_dir().join(format!("ghost-legacy-snap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let dir = tmp.join("snapshots");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("s1000-1.json"), r#"{"secret":"typed text"}"#).unwrap();
+        std::fs::write(dir.join("latest"), "s1000-1").unwrap();
+        std::fs::write(dir.join("keep.txt"), "not ours").unwrap();
+        remove_legacy_snapshot_files(&dir);
+        assert!(!dir.join("s1000-1.json").exists());
+        assert!(!dir.join("latest").exists());
+        assert!(dir.join("keep.txt").exists());
+        std::fs::remove_file(dir.join("keep.txt")).unwrap();
+        remove_legacy_snapshot_files(&dir);
+        assert!(!dir.exists());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn store_rejects_path_like_snapshot_ids() {
-        let tmp = std::env::temp_dir().join(format!("ghost-snap-id-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        let store = SnapshotStore::open_at(tmp.clone()).unwrap();
+        let store = SnapshotStore::isolated();
 
         for id in [
             ".",
@@ -523,7 +1065,5 @@ mod tests {
                 "snapshot id {id:?} must be rejected"
             );
         }
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

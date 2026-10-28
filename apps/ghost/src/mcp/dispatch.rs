@@ -5,7 +5,8 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 
 use crate::tools::{
-    actions, annotate, journal, learning, perception, recipes, snapshot, vision, wait,
+    actions, annotate, journal, learning, overlay_events, perception, recipes, snapshot, vision,
+    wait,
 };
 
 /// Process-wide serialization of synthetic input. Pointer/keyboard tools warp the
@@ -34,9 +35,22 @@ fn is_input_action(tool_name: &str) -> bool {
 }
 
 pub async fn dispatch(tool_name: &str, params: Value) -> Result<Value> {
+    dispatch_with_cursor_identity(tool_name, params, None).await
+}
+
+pub async fn dispatch_with_cursor_identity(
+    tool_name: &str,
+    params: Value,
+    identity: Option<overlay_events::GhostCursorIdentity>,
+) -> Result<Value> {
     if is_input_action(tool_name) {
         let _guard = ACTION_LOCK.lock().await;
-        return dispatch_inner(tool_name, params).await;
+        return overlay_events::with_cursor_identity(identity, dispatch_inner(tool_name, params))
+            .await;
+    }
+    if identity.is_some() {
+        return overlay_events::with_cursor_identity(identity, dispatch_inner(tool_name, params))
+            .await;
     }
     dispatch_inner(tool_name, params).await
 }

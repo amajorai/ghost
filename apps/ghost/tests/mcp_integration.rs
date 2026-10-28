@@ -87,3 +87,58 @@ fn test_mcp_initialize_and_tools_list() {
     drop(stdin);
     let _ = child.wait();
 }
+
+#[test]
+fn test_mcp_modern_stateless_discovery_and_tools_list() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ghost"))
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn ghost mcp");
+
+    let mut stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let mut reader = BufReader::new(stdout);
+    let meta = r#""_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"integration-test","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}"#;
+
+    // Modern clients can discover and use tools without the legacy initialize handshake.
+    send_ndjson(
+        &mut stdin,
+        &format!(r#"{{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{{{meta}}}}}"#),
+    );
+    let discover = read_ndjson(&mut reader);
+    assert_eq!(discover["id"], 1);
+    assert_eq!(
+        discover["result"]["supportedVersions"],
+        serde_json::json!(["2026-07-28", "2024-11-05"])
+    );
+    assert_eq!(discover["result"]["resultType"], "complete");
+    assert_eq!(
+        discover["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+        "ghost"
+    );
+    assert_eq!(discover["result"]["ttlMs"], 0);
+    assert_eq!(discover["result"]["cacheScope"], "private");
+
+    send_ndjson(
+        &mut stdin,
+        &format!(r#"{{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{{{meta}}}}}"#),
+    );
+    let list = read_ndjson(&mut reader);
+    assert_eq!(list["id"], 2);
+    assert_eq!(list["result"]["resultType"], "complete");
+    assert_eq!(list["result"]["cacheScope"], "private");
+    assert_eq!(list["result"]["ttlMs"], 0);
+    let names: Vec<&str> = list["result"]["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .map(|tool| tool["name"].as_str().expect("tool name"))
+        .collect();
+    assert!(names.windows(2).all(|pair| pair[0] <= pair[1]));
+
+    drop(stdin);
+    let _ = child.wait();
+}

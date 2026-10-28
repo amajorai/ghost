@@ -12,16 +12,95 @@
 // any failure — unset URL, dead port, refused connection — is swallowed. An action
 // must NEVER be delayed or failed by the overlay being absent.
 
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
 /// Monotonic sequence number so the overlay can order/de-dup events per process.
 static SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Display identity supplied by Ryu Core through MCP request metadata. This is
+/// deliberately out of the public Ghost tool arguments: models cannot claim to
+/// be another agent or choose a different session title.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GhostCursorIdentity {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar_emoji: Option<String>,
+}
+
+impl GhostCursorIdentity {
+    /// Bound untrusted MCP metadata before it is forwarded to Island's local
+    /// control server. The cursor label is a display hint, never trusted state.
+    pub fn sanitized(mut self) -> Option<Self> {
+        self.agent_id = bounded_cursor_text(self.agent_id, 96);
+        self.agent_name = bounded_cursor_text(self.agent_name, 80);
+        self.agent_title = bounded_cursor_text(self.agent_title, 80);
+        self.session_title = bounded_cursor_text(self.session_title, 160);
+        self.avatar_emoji = bounded_cursor_text(self.avatar_emoji, 8);
+        self.avatar_url = self.avatar_url.and_then(safe_cursor_avatar_url);
+
+        (self.agent_id.is_some()
+            || self.agent_name.is_some()
+            || self.agent_title.is_some()
+            || self.session_title.is_some()
+            || self.avatar_emoji.is_some()
+            || self.avatar_url.is_some())
+        .then_some(self)
+    }
+}
+
+fn bounded_cursor_text(value: Option<String>, limit: usize) -> Option<String> {
+    let value = value?.trim().chars().take(limit).collect::<String>();
+    (!value.is_empty()).then_some(value)
+}
+
+fn safe_cursor_avatar_url(value: String) -> Option<String> {
+    let value = value.trim().to_owned();
+    if value.is_empty() || value.len() > 20_000 {
+        return None;
+    }
+    let lower = value.to_ascii_lowercase();
+    let safe_data_image = [
+        "data:image/png;base64,",
+        "data:image/jpeg;base64,",
+        "data:image/jpg;base64,",
+        "data:image/webp;base64,",
+        "data:image/gif;base64,",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix));
+    (safe_data_image || lower.starts_with("https://") || lower.starts_with("http://"))
+        .then_some(value)
+}
+
+tokio::task_local! {
+    static CURSOR_IDENTITY: Option<GhostCursorIdentity>;
+}
+
+/// Scope trusted caller identity to one serialized MCP action. Event payloads
+/// copy it synchronously before their fire-and-forget HTTP request is spawned.
+pub async fn with_cursor_identity<F: Future>(
+    identity: Option<GhostCursorIdentity>,
+    future: F,
+) -> F::Output {
+    CURSOR_IDENTITY.scope(identity, future).await
+}
 
 /// The overlay URL, resolved once from the environment. `None` (the common case,
 /// e.g. no Island running / not injected) makes every emit a no-op.
@@ -41,6 +120,8 @@ fn overlay_url() -> Option<&'static str> {
 /// `type` · `scroll` · `done` (the tool finished).
 #[derive(Debug, Clone, Serialize)]
 pub struct GhostEvent {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity: Option<GhostCursorIdentity>,
     pub intent: String,
     pub seq: u64,
     pub phase: &'static str,
@@ -59,8 +140,10 @@ fn build_event(
     tool: &str,
     intent: &str,
     ts: u128,
+    identity: Option<GhostCursorIdentity>,
 ) -> GhostEvent {
     GhostEvent {
+        identity,
         intent: bounded_intent(intent),
         seq,
         phase,
@@ -117,7 +200,8 @@ pub fn emit_with_intent(phase: &'static str, x: i32, y: i32, tool: &str, intent:
         return;
     };
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-    let event = build_event(seq, phase, x, y, tool, intent, now_millis());
+    let identity = CURSOR_IDENTITY.try_with(Clone::clone).unwrap_or_default();
+    let event = build_event(seq, phase, x, y, tool, intent, now_millis(), identity);
     let Ok(body) = serde_json::to_string(&event) else {
         return;
     };
@@ -189,6 +273,7 @@ mod tests {
             "ghost_click",
             "Click “Save”",
             1_700_000_000_000,
+            None,
         );
         let value = serde_json::to_value(&event).expect("serializes");
         assert_eq!(
@@ -208,7 +293,7 @@ mod tests {
     #[test]
     fn every_phase_serializes_to_its_literal() {
         for phase in ["move", "down", "up", "type", "scroll", "done"] {
-            let event = build_event(0, phase, 0, 0, "ghost_type", "Typing", 0);
+            let event = build_event(0, phase, 0, 0, "ghost_type", "Typing", 0, None);
             let value = serde_json::to_value(&event).expect("serializes");
             assert_eq!(value["phase"], serde_json::json!(phase));
         }
@@ -216,7 +301,7 @@ mod tests {
 
     #[test]
     fn intent_is_bounded_without_splitting_unicode() {
-        let event = build_event(0, "down", 0, 0, "ghost_click", &"界".repeat(100), 0);
+        let event = build_event(0, "down", 0, 0, "ghost_click", &"界".repeat(100), 0, None);
         let intent = event.intent;
         assert_eq!(intent.chars().count(), MAX_INTENT_CHARS);
         assert!(intent.ends_with('…'));
@@ -225,6 +310,70 @@ mod tests {
     #[test]
     fn now_millis_reads_the_wall_clock() {
         assert!(now_millis() > 1_600_000_000_000);
+    }
+
+    #[test]
+    fn event_carries_the_trusted_cursor_identity_when_available() {
+        let identity = GhostCursorIdentity {
+            agent_id: Some("@ryu/codex".into()),
+            agent_name: Some("Codex".into()),
+            agent_title: Some("Software engineer".into()),
+            session_title: Some("Polish the computer-use cursor".into()),
+            avatar_url: Some("data:image/png;base64,AA==".into()),
+            avatar_emoji: None,
+        };
+        let event = build_event(
+            1,
+            "move",
+            12,
+            24,
+            "ghost_click",
+            "Click Save",
+            0,
+            Some(identity),
+        );
+        let value = serde_json::to_value(event).expect("serializes");
+        assert_eq!(value["identity"]["agentId"], "@ryu/codex");
+        assert_eq!(value["identity"]["agentName"], "Codex");
+        assert_eq!(value["identity"]["agentTitle"], "Software engineer");
+        assert_eq!(
+            value["identity"]["sessionTitle"],
+            "Polish the computer-use cursor"
+        );
+        assert_eq!(value["identity"]["avatarUrl"], "data:image/png;base64,AA==");
+    }
+
+    #[tokio::test]
+    async fn cursor_identity_is_scoped_to_one_action_future() {
+        let identity = GhostCursorIdentity {
+            agent_id: Some("@ryu/codex".into()),
+            agent_name: Some("Codex".into()),
+            ..Default::default()
+        };
+        let scoped = with_cursor_identity(Some(identity.clone()), async {
+            CURSOR_IDENTITY
+                .try_with(Clone::clone)
+                .expect("identity is available inside the action")
+        })
+        .await;
+        assert_eq!(scoped, Some(identity));
+        assert!(CURSOR_IDENTITY.try_with(Clone::clone).is_err());
+    }
+
+    #[test]
+    fn cursor_identity_bounds_text_and_drops_unsafe_avatar_urls() {
+        let identity = GhostCursorIdentity {
+            agent_name: Some("x".repeat(100)),
+            session_title: Some("t".repeat(200)),
+            avatar_url: Some("javascript:alert(1)".into()),
+            ..Default::default()
+        }
+        .sanitized()
+        .expect("text identity remains useful");
+
+        assert_eq!(identity.agent_name.as_deref().map(str::len), Some(80));
+        assert_eq!(identity.session_title.as_deref().map(str::len), Some(160));
+        assert_eq!(identity.avatar_url, None);
     }
 
     // Run under a runtime so the emit path is safe whether or not an overlay URL is set

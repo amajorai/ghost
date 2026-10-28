@@ -144,7 +144,8 @@ pub async fn ghost_run(params: Value) -> Result<Value> {
             let wp = serde_json::json!({
                 "condition": wait.condition,
                 "value":     wait.value,
-                "timeout":   wait.timeout.unwrap_or(5.0),
+                // A stored negative timeout would make ghost_wait reject the call; treat it as 0.
+                "timeout":   wait.timeout.unwrap_or(5.0).max(0.0),
                 "interval":  0.5,
             });
             // Ignore timeout/not-met result — recipe on_failure handles step failure
@@ -292,7 +293,8 @@ async fn execute_step(
                 .and_then(|p| p.get("seconds"))
                 .and_then(|s| s.parse::<f64>().ok())
                 .unwrap_or(1.0);
-            tokio::time::sleep(tokio::time::Duration::from_secs_f64(secs)).await;
+            // Recipe params are untrusted ("-1", "inf", "1e300"); never panic on them.
+            tokio::time::sleep(super::bounded_secs(secs, 1.0, 0.0, 300.0)).await;
             Ok(())
         }
         "hover" => {
@@ -369,7 +371,7 @@ async fn execute_step(
         }
         "delay" | "sleep" => {
             let secs = param_f64(step_params, "duration").unwrap_or(1.0);
-            tokio::time::sleep(tokio::time::Duration::from_secs_f64(secs)).await;
+            tokio::time::sleep(super::bounded_secs(secs, 1.0, 0.0, 300.0)).await;
             Ok(())
         }
         "screenshot" => perception::ghost_screenshot(json!({})).await.map(|_| ()),

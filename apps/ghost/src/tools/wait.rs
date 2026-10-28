@@ -4,15 +4,33 @@ use tokio::time::{Duration, Instant};
 
 use ghost_eyes::{AXTree, PlatformAXTree, PlatformWindowTracker, WindowTracker};
 
-use super::{f64_param, str_param};
+use super::{bounded_secs, f64_param, str_param};
+
+/// Upper bound for `timeout` (and `interval`). It keeps `Instant::now() + timeout` from
+/// overflowing and stops a single `delay` from tying up the stdio server for hours.
+const MAX_WAIT_SECS: f64 = 300.0;
+/// Floor for the poll `interval`, so `interval: 0` cannot spin a busy AX-polling loop.
+const MIN_POLL_INTERVAL_SECS: f64 = 0.05;
 
 pub async fn ghost_wait(params: Value) -> Result<Value> {
     let condition = params["condition"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("'condition' required"))?;
     let value = str_param(&params, "value");
-    let timeout = Duration::from_secs_f64(f64_param(&params, "timeout", 10.0));
-    let interval = Duration::from_secs_f64(f64_param(&params, "interval", 0.5));
+    // Model-supplied numbers are untrusted: `Duration::from_secs_f64` panics on negative or
+    // overflowing input, which would take down the whole MCP server mid-call. Reject a
+    // negative timeout as a tool error the model can correct, and clamp everything else.
+    let raw_timeout = f64_param(&params, "timeout", 10.0);
+    if raw_timeout < 0.0 {
+        anyhow::bail!("'timeout' must be a non-negative number of seconds");
+    }
+    let timeout = bounded_secs(raw_timeout, 10.0, 0.0, MAX_WAIT_SECS);
+    let interval = bounded_secs(
+        f64_param(&params, "interval", 0.5),
+        0.5,
+        MIN_POLL_INTERVAL_SECS,
+        MAX_WAIT_SECS,
+    );
     let _app = str_param(&params, "app");
 
     // "delay" is a one-shot sleep, not a polled condition
@@ -56,8 +74,14 @@ pub async fn ghost_wait(params: Value) -> Result<Value> {
             }));
         }
 
-        tokio::time::sleep(interval).await;
+        tokio::time::sleep(next_poll_sleep(interval, deadline, Instant::now())).await;
     }
+}
+
+/// Sleep until the next poll, but never past `deadline`: an `interval` longer than the
+/// remaining timeout must not stretch the wait beyond the `timeout` the caller asked for.
+fn next_poll_sleep(interval: Duration, deadline: Instant, now: Instant) -> Duration {
+    interval.min(deadline.saturating_duration_since(now))
 }
 
 async fn check_condition(
@@ -148,5 +172,54 @@ mod tests {
         assert_eq!(out["condition_met"], json!(true));
         assert_eq!(out["condition"], json!("delay"));
         assert_eq!(out["polls"], json!(0));
+    }
+
+    #[tokio::test]
+    async fn wait_rejects_negative_timeout_instead_of_panicking() {
+        // `Duration::from_secs_f64(-1.0)` panics; the tool must return an error instead,
+        // before any sleep or AX/window access.
+        let err = ghost_wait(json!({ "condition": "delay", "timeout": -1 }))
+            .await
+            .expect_err("negative timeout is rejected");
+        assert!(err.to_string().contains("non-negative"));
+    }
+
+    #[tokio::test]
+    async fn wait_clamps_out_of_range_interval_instead_of_panicking() {
+        // A negative or overflowing interval used to panic in `Duration::from_secs_f64`
+        // before the delay branch ran; it is now clamped. A zero delay touches no AX state.
+        for interval in [json!(-1), json!(1e300)] {
+            let out =
+                ghost_wait(json!({ "condition": "delay", "timeout": 0, "interval": interval }))
+                    .await
+                    .expect("out-of-range interval is clamped, not fatal");
+            assert_eq!(out["condition_met"], json!(true));
+            assert_eq!(out["elapsed_ms"], json!(0));
+        }
+    }
+
+    #[test]
+    fn next_poll_sleep_never_overshoots_the_deadline() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_millis(200);
+        // A long interval is cut to the time left before the deadline.
+        assert_eq!(
+            next_poll_sleep(Duration::from_secs(300), deadline, now),
+            Duration::from_millis(200)
+        );
+        // A short interval is used as-is.
+        assert_eq!(
+            next_poll_sleep(Duration::from_millis(50), deadline, now),
+            Duration::from_millis(50)
+        );
+        // Past the deadline there is nothing left to sleep.
+        assert_eq!(
+            next_poll_sleep(
+                Duration::from_secs(1),
+                deadline,
+                deadline + Duration::from_secs(1)
+            ),
+            Duration::ZERO
+        );
     }
 }

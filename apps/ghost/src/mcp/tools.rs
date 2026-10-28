@@ -250,8 +250,8 @@ pub fn definitions() -> Vec<Value> {
                 "properties": {
                     "condition": { "type": "string", "description": "urlContains, titleContains, elementExists, elementGone, urlChanged, titleChanged, delay. For delay, timeout is the sleep duration and no value is needed." },
                     "value":     { "type": "string", "description": "Match value (required for urlContains, titleContains, elementExists, elementGone; not used for delay)." },
-                    "timeout":   { "type": "number", "description": "Max seconds to wait (default: 10)." },
-                    "interval":  { "type": "number", "description": "Poll interval in seconds (default: 0.5)." }
+                    "timeout":   { "type": "number", "minimum": 0, "maximum": 300, "description": "Max seconds to wait (default: 10, max: 300)." },
+                    "interval":  { "type": "number", "minimum": 0, "description": "Poll interval in seconds (default: 0.5, min: 0.05)." }
                 },
                 "required": ["condition"]
             })),

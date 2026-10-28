@@ -1,6 +1,6 @@
 [package]
 name = "ghost"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "Apache-2.0"
 
@@ -13,6 +13,7 @@ ghost-core  = { path = "../../crates/ghost/core" }
 ghost-eyes  = { path = "../../crates/ghost/eyes" }
 ghost-hands = { path = "../../crates/ghost/hands" }
 ghost-permissions = { path = "../../crates/ghost/permissions" }
+ryu-sidecar-runtime = { path = "../../crates/core/sidecar-runtime", features = ["peer-probe"] }
 
 tokio      = { version = "1", features = ["full"] }
 serde      = { version = "1", features = ["derive"] }
@@ -24,10 +25,12 @@ clap       = { version = "4", features = ["derive"] }
 base64     = "0.22"
 image      = "0.25"
 imageproc  = "0.25"
-dirs       = "6"
 chrono     = "0.4"
 
 ort = { version = "2.0.0-rc.12", optional = true }
+# Phase-2 content sealing (encb:v1 / RYU-CB01 / blind indexes). No OS keychain
+# backend: the key arrives from Core (RYU_SEAL_KEY) or RYU_MASTER_KEY.
+ryu-crypto = { path = "../../crates/core/crypto", version = "0.5.0", default-features = false }
 
 [features]
 default = []

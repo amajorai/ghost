@@ -2,7 +2,7 @@
 // Only compiled when the `ort` feature is enabled.
 // Ported from apps/shadow/src/intelligence/grounding.rs.
 //
-// Model file expected at: ~/.ghost/models/showui-2b.onnx
+// Model file expected at: <data dir>/models/vision/ghost/showui-2b.onnx
 // Download: https://huggingface.co/showlab/ShowUI-2B-ONNX
 
 #[cfg(feature = "ort")]
@@ -23,13 +23,9 @@ pub mod showui {
     const SHOWUI_MEAN: [f32; 3] = [0.48145466, 0.4578275, 0.40821073];
     const SHOWUI_STD: [f32; 3] = [0.26862954, 0.26130258, 0.27577711];
 
-    /// Return the default model path: `~/.ghost/models/showui-2b.onnx`.
+    /// Return the default model path: `<data dir>/models/vision/ghost/showui-2b.onnx`.
     pub fn default_model_path() -> std::path::PathBuf {
-        dirs::home_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(".ghost")
-            .join("models")
-            .join("showui-2b.onnx")
+        ghost_core::paths::showui_model_path()
     }
 
     pub struct ShowUIModel {
@@ -37,14 +33,14 @@ pub mod showui {
     }
 
     impl ShowUIModel {
-        /// Load the model from `~/.ghost/models/showui-2b.onnx`.
+        /// Load the model from `<data dir>/models/vision/ghost/showui-2b.onnx`.
         pub fn load() -> Result<Self> {
             let path = default_model_path();
             if !path.exists() {
                 anyhow::bail!(
                     "ShowUI-2B model not found at {:?}. \
                      Download from https://huggingface.co/showlab/ShowUI-2B-ONNX \
-                     and place at ~/.ghost/models/showui-2b.onnx",
+                     and place at <data dir>/models/vision/ghost/showui-2b.onnx",
                     path
                 );
             }
