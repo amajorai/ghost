@@ -5,6 +5,7 @@ pub mod learning;
 pub mod overlay_events;
 pub mod perception;
 pub mod recipes;
+pub mod refs;
 pub mod snapshot;
 pub mod vision;
 pub mod wait;

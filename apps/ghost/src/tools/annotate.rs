@@ -74,6 +74,7 @@ pub async fn ghost_annotate(params: Value) -> Result<Value> {
         enabled: true,
         focused: false,
         hidden: false,
+        ..Default::default()
     });
 
     // Collect interactive elements
@@ -288,6 +289,7 @@ mod tests {
             enabled: true,
             focused: false,
             hidden: false,
+            ..Default::default()
         }
     }
 

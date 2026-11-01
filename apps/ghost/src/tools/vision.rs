@@ -93,6 +93,7 @@ async fn focused_elements(max: usize) -> Result<Vec<Element>> {
         enabled: true,
         focused: false,
         hidden: false,
+        ..Default::default()
     });
     let mut elements = Vec::new();
     collect(&tree, &roles, max, &mut elements);
@@ -265,6 +266,7 @@ mod tests {
             enabled: true,
             focused: false,
             hidden: false,
+            ..Default::default()
         }
     }
 

@@ -102,6 +102,14 @@ pub async fn with_cursor_identity<F: Future>(
     CURSOR_IDENTITY.scope(identity, future).await
 }
 
+/// agent_id of the trusted cursor identity scoped to the current MCP call, if any.
+pub(crate) fn current_agent_id() -> Option<String> {
+    CURSOR_IDENTITY
+        .try_with(|identity| identity.as_ref().and_then(|i| i.agent_id.clone()))
+        .ok()
+        .flatten()
+}
+
 /// The overlay URL, resolved once from the environment. `None` (the common case,
 /// e.g. no Island running / not injected) makes every emit a no-op.
 fn overlay_url() -> Option<&'static str> {

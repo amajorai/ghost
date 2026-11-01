@@ -2,7 +2,8 @@ use anyhow::Result;
 use serde_json::{json, Value};
 use tokio::time::{Duration, Instant};
 
-use ghost_eyes::{AXTree, PlatformAXTree, PlatformWindowTracker, WindowTracker};
+use ghost_eyes::accessibility::find::{find_in_tree, FindOptions};
+use ghost_eyes::{AXTree, GhostError, PlatformAXTree, PlatformWindowTracker, WindowTracker};
 
 use super::{bounded_secs, f64_param, str_param};
 
@@ -11,18 +12,37 @@ use super::{bounded_secs, f64_param, str_param};
 const MAX_WAIT_SECS: f64 = 300.0;
 /// Floor for the poll `interval`, so `interval: 0` cannot spin a busy AX-polling loop.
 const MIN_POLL_INTERVAL_SECS: f64 = 0.05;
+/// Every condition `ghost_wait` understands; anything else is INVALID_ARGS.
+const CONDITIONS: &[&str] = &[
+    "urlContains",
+    "titleContains",
+    "elementExists",
+    "elementGone",
+    "urlChanged",
+    "titleChanged",
+    "delay",
+];
 
 pub async fn ghost_wait(params: Value) -> Result<Value> {
     let condition = params["condition"]
         .as_str()
-        .ok_or_else(|| anyhow::anyhow!("'condition' required"))?;
+        .ok_or_else(|| GhostError::invalid_args("'condition' required"))?;
+    if !CONDITIONS.contains(&condition) {
+        return Err(GhostError::invalid_args(format!(
+            "Unknown condition '{condition}'; expected one of: {}",
+            CONDITIONS.join(", ")
+        ))
+        .into());
+    }
     let value = str_param(&params, "value");
     // Model-supplied numbers are untrusted: `Duration::from_secs_f64` panics on negative or
     // overflowing input, which would take down the whole MCP server mid-call. Reject a
     // negative timeout as a tool error the model can correct, and clamp everything else.
     let raw_timeout = f64_param(&params, "timeout", 10.0);
     if raw_timeout < 0.0 {
-        anyhow::bail!("'timeout' must be a non-negative number of seconds");
+        return Err(
+            GhostError::invalid_args("'timeout' must be a non-negative number of seconds").into(),
+        );
     }
     let timeout = bounded_secs(raw_timeout, 10.0, 0.0, MAX_WAIT_SECS);
     let interval = bounded_secs(
@@ -101,28 +121,10 @@ async fn check_condition(
             let v = value.unwrap_or("");
             title.as_deref().unwrap_or("").contains(v)
         }
-        "elementExists" => {
-            let query = value.unwrap_or("");
-            if query.is_empty() {
-                return false;
-            }
-            let ax = match PlatformAXTree::new() {
-                Ok(a) => a,
-                Err(_) => return false,
-            };
-            ax.find_element(query).await.is_some()
-        }
-        "elementGone" => {
-            let query = value.unwrap_or("");
-            if query.is_empty() {
-                return false;
-            }
-            let ax = match PlatformAXTree::new() {
-                Ok(a) => a,
-                Err(_) => return false,
-            };
-            ax.find_element(query).await.is_none()
-        }
+        // `find_in_tree` never matches a secure node's value, so a password cannot be
+        // probed by waiting on it. A tree that cannot be read satisfies neither condition.
+        "elementExists" => element_present(value).await == Some(true),
+        "elementGone" => element_present(value).await == Some(false),
         "urlChanged" => {
             let current = get_current_url().await;
             current != *initial_url
@@ -133,6 +135,14 @@ async fn check_condition(
         }
         _ => false,
     }
+}
+
+/// `Some(found)` when the focused tree could be read and the query is non-empty.
+async fn element_present(query: Option<&str>) -> Option<bool> {
+    let query = query.filter(|q| !q.trim().is_empty())?;
+    let ax = PlatformAXTree::new().ok()?;
+    let tree = ax.get_focused_tree().await.ok()?;
+    Some(find_in_tree(&tree, query, FindOptions::default()).is_some())
 }
 
 async fn get_current_url() -> Option<String> {
@@ -155,6 +165,49 @@ mod tests {
             .await
             .expect_err("condition is required");
         assert!(err.to_string().contains("'condition' required"));
+    }
+
+    #[tokio::test]
+    async fn wait_rejects_an_unknown_condition_before_polling() {
+        let err = ghost_wait(json!({ "condition": "bogusCondition", "timeout": 30 }))
+            .await
+            .expect_err("unknown condition is rejected");
+        let g = GhostError::from_anyhow(&err);
+        assert_eq!(g.code, ghost_eyes::ErrorCode::InvalidArgs);
+        assert!(g.message.contains("bogusCondition"));
+    }
+
+    #[tokio::test]
+    async fn missing_condition_is_invalid_args() {
+        let err = ghost_wait(json!({}))
+            .await
+            .expect_err("condition is required");
+        assert_eq!(
+            GhostError::from_anyhow(&err).code,
+            ghost_eyes::ErrorCode::InvalidArgs
+        );
+    }
+
+    #[tokio::test]
+    async fn element_conditions_with_empty_query_are_never_met() {
+        assert_eq!(element_present(None).await, None);
+        assert_eq!(element_present(Some("  ")).await, None);
+    }
+
+    #[test]
+    fn element_matcher_never_matches_a_secure_value() {
+        let secret = ghost_eyes::AXTreeNode {
+            role: "AXSecureTextField".into(),
+            value: Some("hunter2".into()),
+            secure: true,
+            ..Default::default()
+        };
+        let root = ghost_eyes::AXTreeNode {
+            role: "AXWindow".into(),
+            children: vec![secret],
+            ..Default::default()
+        };
+        assert!(find_in_tree(&root, "hunter2", FindOptions::default()).is_none());
     }
 
     #[tokio::test]

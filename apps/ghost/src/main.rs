@@ -1,3 +1,4 @@
+mod errors;
 mod mcp;
 mod refmap;
 mod tools;

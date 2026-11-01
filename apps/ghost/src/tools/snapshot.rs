@@ -1,15 +1,22 @@
 use anyhow::Result;
 use serde_json::{json, Value};
 
-use ghost_eyes::{AXTree, PlatformAXTree, PlatformWindowTracker, WindowTracker};
+use ghost_eyes::{
+    AXTree, GhostError, PlatformAXTree, PlatformWindowTracker, SnapshotOptions, WalkLimits,
+    WindowTarget, WindowTracker,
+};
 use ghost_hands::focus_app;
 
-use crate::refmap::{reidentify, render, Resolved, Snapshot, SnapshotStore};
+use crate::refmap::{render, Snapshot, SnapshotStore};
 
-use super::{int_param, str_param};
+use super::refs::{load_snapshot, parse_ref, pinned_snapshot};
+use super::{int_param, nonblank_str_param, overlay_events, str_param};
 
 const DRILL_SUGGESTION: &str =
-    "Act on a ref with ghost_click/ghost_type {\"ref\":\"@eN\"}, or expand a container with ghost_snapshot {\"root\":\"@eN\"}.";
+    "Act on a ref with ghost_click/ghost_type {\"ref\":\"@<snapshot_id>:eN\"} (the qualified form, ref_prefix + eN, is preferred over a bare @eN), or expand a container with ghost_snapshot {\"root\":\"@<snapshot_id>:eN\"}.";
+
+const INCOMPLETE_SUGGESTION: &str =
+    "The walk hit a limit, so this tree is incomplete: nodes marked subtree_truncated were not fully walked. Drill down with ghost_snapshot {\"root\":\"@<snapshot_id>:eN\"} on the container you need, or snapshot a narrower window with {\"window\":\"<title>\"}.";
 
 /// Capture a fresh skeleton of the focused window (assigning stable `@eN` refs), or
 /// — when `root` is given — re-render a deeper view of a container from an existing
@@ -26,81 +33,89 @@ pub async fn ghost_snapshot(params: Value) -> Result<Value> {
     let store = SnapshotStore::open()?;
 
     // Drill-down: re-render a container from a stored snapshot, no re-capture.
-    if let Some(ref_id) = str_param(&params, "root") {
-        let snapshot = match str_param(&params, "snapshot") {
-            Some(id) => store.load(id)?,
-            None => store.load_latest()?,
-        };
-        let node = snapshot
-            .find_ref(ref_id)
-            .ok_or_else(|| anyhow::anyhow!("ref {ref_id} not found in snapshot {}", snapshot.id))?;
-        return Ok(json!({
-            "snapshot_id": snapshot.id,
-            "root": ref_id,
-            "tree": render(node, depth),
-            "suggestion": DRILL_SUGGESTION,
-        }));
+    if let Some(root) = str_param(&params, "root") {
+        return drill_down(&store, root, str_param(&params, "snapshot"), depth).map_err(Into::into);
     }
 
-    // Fresh capture of the focused window.
-    let tracker = PlatformWindowTracker::new()?;
-    let win = tracker.get_active_window().await;
-    let pid = win.as_ref().map(|w| w.pid).unwrap_or(0);
-    let app_name = win.as_ref().map(|w| w.app_name.clone());
-
+    // Fresh capture. The walker computes its own deadline, so the budget starts
+    // after the optional focus above.
+    let target = nonblank_str_param(&params, "window").map_or(WindowTarget::Focused, |title| {
+        WindowTarget::FocusedTitle {
+            title: title.to_string(),
+        }
+    });
     let ax = PlatformAXTree::new()?;
-    let tree = ax.get_focused_tree().await?;
+    let captured = ax
+        .snapshot(SnapshotOptions {
+            target,
+            limits: WalkLimits::platform_default(),
+            activate_renderer: true,
+        })
+        .await?;
+
+    // The backend may not know the pid or app (pid 0); the focused window fills them.
+    let active = match PlatformWindowTracker::new() {
+        Ok(tracker) => tracker.get_active_window().await,
+        Err(_) => None,
+    };
+    let pid = if captured.pid > 0 {
+        captured.pid
+    } else {
+        active.as_ref().map_or(0, |w| w.pid)
+    };
+    let app_name = captured
+        .app_name
+        .clone()
+        .or_else(|| active.as_ref().map(|w| w.app_name.clone()));
+
     let now_ms = chrono::Utc::now().timestamp_millis();
-    let snapshot = Snapshot::build(&tree, app_name.clone(), pid, now_ms);
+    let creator = overlay_events::current_agent_id();
+    let snapshot = Snapshot::from_ax(&captured, app_name.clone(), pid, creator, now_ms);
     store.save(&snapshot)?;
 
+    let suggestion = if snapshot.complete {
+        DRILL_SUGGESTION.to_string()
+    } else {
+        format!("{INCOMPLETE_SUGGESTION} {DRILL_SUGGESTION}")
+    };
     Ok(json!({
         "snapshot_id": snapshot.id,
+        "ref_prefix": snapshot.ref_prefix(),
         "app": app_name,
         "pid": pid,
+        "window": snapshot.window_title,
         "ref_count": snapshot.ref_count(),
+        "complete": snapshot.complete,
+        "truncated_nodes": snapshot.truncated_nodes,
+        "accessibility_enabled": snapshot.renderer,
         "tree": render(&snapshot.tree, depth),
-        "suggestion": DRILL_SUGGESTION,
+        "suggestion": suggestion,
     }))
 }
 
-/// Resolve an `@eN` ref from the latest snapshot to current screen coordinates,
-/// re-identifying the element in the now-focused window. Returns a `STALE_REF` error
-/// (in the message) if the focused app changed or the element is gone.
-pub async fn resolve_ref(ref_id: &str) -> Result<(i32, i32)> {
-    let store = SnapshotStore::open()?;
-    let snapshot = store.load_latest()?;
-    let entry = snapshot.find_ref(ref_id).cloned().ok_or_else(|| {
-        anyhow::anyhow!(
-            "STALE_REF: {ref_id} is not in the latest snapshot ({}); re-run ghost_snapshot",
-            snapshot.id
-        )
+/// Re-render the subtree under `root` (`@eN` or `@<sid>:eN`) from a stored snapshot.
+fn drill_down(
+    store: &SnapshotStore,
+    root: &str,
+    snapshot_param: Option<&str>,
+    depth: u32,
+) -> Result<Value, GhostError> {
+    let target = parse_ref(root)?;
+    let pinned = pinned_snapshot(&target, snapshot_param)?;
+    let snapshot = load_snapshot(store, pinned.as_deref())?;
+    let node = snapshot.find_ref(&target.local).ok_or_else(|| {
+        GhostError::stale_ref(format!(
+            "ref {} not found in snapshot {}",
+            target.local, snapshot.id
+        ))
+        .with_details(json!({ "reason": "ref_not_in_snapshot", "snapshot_id": snapshot.id }))
+        .with_suggestion("run ghost_snapshot again and use the new ref")
     })?;
-
-    // Focus the snapshot's app so re-identification reads the right window.
-    if let Some(app) = &snapshot.app {
-        focus_app(app);
-        tokio::time::sleep(tokio::time::Duration::from_millis(120)).await;
-    }
-
-    let tracker = PlatformWindowTracker::new()?;
-    let cur_pid = tracker
-        .get_active_window()
-        .await
-        .map(|w| w.pid)
-        .unwrap_or(0);
-    if snapshot.pid != 0 && cur_pid != 0 && cur_pid != snapshot.pid {
-        anyhow::bail!(
-            "STALE_REF: the focused app changed (snapshot pid {}, now {}); re-run ghost_snapshot",
-            snapshot.pid,
-            cur_pid
-        );
-    }
-
-    let ax = PlatformAXTree::new()?;
-    let tree = ax.get_focused_tree().await?;
-    match reidentify(&tree, &entry) {
-        Resolved::At { x, y } => Ok((x, y)),
-        Resolved::Stale(msg) => Err(anyhow::anyhow!(msg)),
-    }
+    Ok(json!({
+        "snapshot_id": snapshot.id,
+        "ref_prefix": snapshot.ref_prefix(),
+        "root": target.local,
+        "tree": render(node, depth),
+        "suggestion": DRILL_SUGGESTION,
+    }))
 }

@@ -20,7 +20,7 @@ static ACTION_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// Whether `tool_name` synthesises pointer/keyboard input and must run under
 /// [`ACTION_LOCK`].
-fn is_input_action(tool_name: &str) -> bool {
+pub(crate) fn is_input_action(tool_name: &str) -> bool {
     matches!(
         tool_name,
         "ghost_click"

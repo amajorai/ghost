@@ -1188,7 +1188,7 @@ dependencies = [
 
 [[package]]
 name = "ghost"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1213,7 +1213,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1229,7 +1229,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-eyes"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1249,7 +1249,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-hands"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "core-graphics",
@@ -1264,7 +1264,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-permissions"
-version = "0.5.0"
+version = "0.5.1"
 
 [[package]]
 name = "gif"
@@ -2901,7 +2901,7 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "ryu-crypto"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2924,7 +2924,7 @@ dependencies = [
 
 [[package]]
 name = "ryu-sidecar-runtime"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "dirs",
  "hmac",
