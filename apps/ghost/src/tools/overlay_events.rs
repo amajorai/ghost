@@ -130,7 +130,14 @@ fn overlay_url() -> Option<&'static str> {
 pub struct GhostEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub identity: Option<GhostCursorIdentity>,
+    /// English prose label, kept for Island builds that predate `kind`.
     pub intent: String,
+    /// Stable intent kind (see [`GhostIntent`]); Island renders it in the
+    /// user's language.
+    pub kind: &'static str,
+    /// The element a click targets, shown verbatim inside the translated label.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
     pub seq: u64,
     pub phase: &'static str,
     pub x: i32,
@@ -146,13 +153,19 @@ fn build_event(
     x: i32,
     y: i32,
     tool: &str,
-    intent: &str,
+    intent: &GhostIntent,
     ts: u128,
     identity: Option<GhostCursorIdentity>,
 ) -> GhostEvent {
     GhostEvent {
         identity,
-        intent: bounded_intent(intent),
+        intent: bounded_intent(&intent.prose()),
+        kind: intent.kind,
+        target: intent
+            .target
+            .as_deref()
+            .map(bounded_intent)
+            .filter(|target| !target.is_empty()),
         seq,
         phase,
         x,
@@ -177,15 +190,70 @@ fn bounded_intent(intent: &str) -> String {
     }
 }
 
-fn default_intent(tool: &str) -> &'static str {
-    match tool {
-        "ghost_click" => "Clicking",
-        "ghost_type" => "Typing",
-        "ghost_scroll" => "Scrolling",
-        "ghost_drag" => "Dragging",
-        "ghost_hover" => "Hovering",
-        "ghost_long_press" => "Holding",
-        _ => "Working",
+/// What the agent is doing, as a stable kind plus an optional target. Ghost
+/// sends the kind (not English prose) so Island can label the cursor in the
+/// user's language; `prose()` is the English fallback for older Island builds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GhostIntent {
+    kind: &'static str,
+    target: Option<String>,
+}
+
+/// Every kind Ghost emits, with its English prose. Island's
+/// `GHOST_INTENT_KINDS` mirrors this list.
+const INTENT_KINDS: [(&str, &str); 8] = [
+    ("click", "Click"),
+    ("clicking", "Clicking"),
+    ("typing", "Typing"),
+    ("scrolling", "Scrolling"),
+    ("dragging", "Dragging"),
+    ("hovering", "Hovering"),
+    ("holding", "Holding"),
+    ("working", "Working"),
+];
+
+impl GhostIntent {
+    /// The default intent for a tool with no more specific target.
+    pub fn for_tool(tool: &str) -> Self {
+        let kind = match tool {
+            "ghost_click" => "clicking",
+            "ghost_type" => "typing",
+            "ghost_scroll" => "scrolling",
+            "ghost_drag" => "dragging",
+            "ghost_hover" => "hovering",
+            "ghost_long_press" => "holding",
+            _ => "working",
+        };
+        Self { kind, target: None }
+    }
+
+    /// A click, naming the element when one is known. The full query or
+    /// selector stays out of the protocol; only a trimmed label travels.
+    pub fn click(target: Option<&str>) -> Self {
+        Self {
+            kind: "click",
+            target: target
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn kind(&self) -> &'static str {
+        self.kind
+    }
+
+    /// English label for Island builds that do not read `kind` yet.
+    pub fn prose(&self) -> String {
+        match (&self.target, self.kind) {
+            (Some(target), "click") => format!("Click “{target}”"),
+            _ => INTENT_KINDS
+                .iter()
+                .find(|(kind, _)| *kind == self.kind)
+                .map_or("Working", |(_, prose)| prose)
+                .to_owned(),
+        }
     }
 }
 
@@ -199,11 +267,11 @@ fn now_millis() -> u128 {
 /// Narrate one input action to the overlay. Fire-and-forget: returns immediately;
 /// the POST is detached and bounded to 200 ms. A no-op when no overlay URL is set.
 pub fn emit(phase: &'static str, x: i32, y: i32, tool: &str) {
-    emit_with_intent(phase, x, y, tool, default_intent(tool));
+    emit_with_intent(phase, x, y, tool, &GhostIntent::for_tool(tool));
 }
 
-/// Narrate one input action with a short label shown beside the ghost cursor.
-pub fn emit_with_intent(phase: &'static str, x: i32, y: i32, tool: &str, intent: &str) {
+/// Narrate one input action with the intent shown beside the ghost cursor.
+pub fn emit_with_intent(phase: &'static str, x: i32, y: i32, tool: &str, intent: &GhostIntent) {
     let Some(url) = overlay_url() else {
         return;
     };
@@ -223,22 +291,22 @@ pub fn emit_with_intent(phase: &'static str, x: i32, y: i32, tool: &str, intent:
 
 /// Narrate the start of a press: the cursor heads to the target, then presses.
 pub fn press_start(x: i32, y: i32, tool: &str) {
-    press_start_with_intent(x, y, tool, default_intent(tool));
+    press_start_with_intent(x, y, tool, &GhostIntent::for_tool(tool));
 }
 
-/// Narrate the start of a press with a target-aware intent label.
-pub fn press_start_with_intent(x: i32, y: i32, tool: &str, intent: &str) {
+/// Narrate the start of a press with a target-aware intent.
+pub fn press_start_with_intent(x: i32, y: i32, tool: &str, intent: &GhostIntent) {
     emit_with_intent("move", x, y, tool, intent);
     emit_with_intent("down", x, y, tool, intent);
 }
 
 /// Narrate the end of a press: release + the tool finishing.
 pub fn press_end(x: i32, y: i32, tool: &str) {
-    press_end_with_intent(x, y, tool, default_intent(tool));
+    press_end_with_intent(x, y, tool, &GhostIntent::for_tool(tool));
 }
 
-/// Narrate the end of a press with the same target-aware intent label.
-pub fn press_end_with_intent(x: i32, y: i32, tool: &str, intent: &str) {
+/// Narrate the end of a press with the same target-aware intent.
+pub fn press_end_with_intent(x: i32, y: i32, tool: &str, intent: &GhostIntent) {
     emit_with_intent("up", x, y, tool, intent);
     emit_with_intent("done", x, y, tool, intent);
 }
@@ -266,132 +334,5 @@ async fn post(url: &str, body: &str) -> std::io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn event_payload_shape_is_stable() {
-        // Golden: the exact JSON the overlay contract depends on. Fixed seq/ts so the
-        // snapshot is deterministic.
-        let event = build_event(
-            7,
-            "down",
-            512,
-            384,
-            "ghost_click",
-            "Click “Save”",
-            1_700_000_000_000,
-            None,
-        );
-        let value = serde_json::to_value(&event).expect("serializes");
-        assert_eq!(
-            value,
-            serde_json::json!({
-                "seq": 7,
-                "phase": "down",
-                "x": 512,
-                "y": 384,
-                "tool": "ghost_click",
-                "intent": "Click “Save”",
-                "ts": 1_700_000_000_000u128,
-            })
-        );
-    }
-
-    #[test]
-    fn every_phase_serializes_to_its_literal() {
-        for phase in ["move", "down", "up", "type", "scroll", "done"] {
-            let event = build_event(0, phase, 0, 0, "ghost_type", "Typing", 0, None);
-            let value = serde_json::to_value(&event).expect("serializes");
-            assert_eq!(value["phase"], serde_json::json!(phase));
-        }
-    }
-
-    #[test]
-    fn intent_is_bounded_without_splitting_unicode() {
-        let event = build_event(0, "down", 0, 0, "ghost_click", &"界".repeat(100), 0, None);
-        let intent = event.intent;
-        assert_eq!(intent.chars().count(), MAX_INTENT_CHARS);
-        assert!(intent.ends_with('…'));
-    }
-
-    #[test]
-    fn now_millis_reads_the_wall_clock() {
-        assert!(now_millis() > 1_600_000_000_000);
-    }
-
-    #[test]
-    fn event_carries_the_trusted_cursor_identity_when_available() {
-        let identity = GhostCursorIdentity {
-            agent_id: Some("@ryu/codex".into()),
-            agent_name: Some("Codex".into()),
-            agent_title: Some("Software engineer".into()),
-            session_title: Some("Polish the computer-use cursor".into()),
-            avatar_url: Some("data:image/png;base64,AA==".into()),
-            avatar_emoji: None,
-        };
-        let event = build_event(
-            1,
-            "move",
-            12,
-            24,
-            "ghost_click",
-            "Click Save",
-            0,
-            Some(identity),
-        );
-        let value = serde_json::to_value(event).expect("serializes");
-        assert_eq!(value["identity"]["agentId"], "@ryu/codex");
-        assert_eq!(value["identity"]["agentName"], "Codex");
-        assert_eq!(value["identity"]["agentTitle"], "Software engineer");
-        assert_eq!(
-            value["identity"]["sessionTitle"],
-            "Polish the computer-use cursor"
-        );
-        assert_eq!(value["identity"]["avatarUrl"], "data:image/png;base64,AA==");
-    }
-
-    #[tokio::test]
-    async fn cursor_identity_is_scoped_to_one_action_future() {
-        let identity = GhostCursorIdentity {
-            agent_id: Some("@ryu/codex".into()),
-            agent_name: Some("Codex".into()),
-            ..Default::default()
-        };
-        let scoped = with_cursor_identity(Some(identity.clone()), async {
-            CURSOR_IDENTITY
-                .try_with(Clone::clone)
-                .expect("identity is available inside the action")
-        })
-        .await;
-        assert_eq!(scoped, Some(identity));
-        assert!(CURSOR_IDENTITY.try_with(Clone::clone).is_err());
-    }
-
-    #[test]
-    fn cursor_identity_bounds_text_and_drops_unsafe_avatar_urls() {
-        let identity = GhostCursorIdentity {
-            agent_name: Some("x".repeat(100)),
-            session_title: Some("t".repeat(200)),
-            avatar_url: Some("javascript:alert(1)".into()),
-            ..Default::default()
-        }
-        .sanitized()
-        .expect("text identity remains useful");
-
-        assert_eq!(identity.agent_name.as_deref().map(str::len), Some(80));
-        assert_eq!(identity.session_title.as_deref().map(str::len), Some(160));
-        assert_eq!(identity.avatar_url, None);
-    }
-
-    // Run under a runtime so the emit path is safe whether or not an overlay URL is set
-    // in the environment (a set URL would `tokio::spawn` the detached POST).
-    #[tokio::test]
-    async fn emit_and_press_helpers_never_panic() {
-        // With no overlay URL these are pure no-ops; the point is that narrating an
-        // action must never fail or block the caller regardless of overlay presence.
-        emit("move", 1, 2, "ghost_click");
-        press_start(3, 4, "ghost_click");
-        press_end(5, 6, "ghost_click");
-    }
-}
+#[path = "overlay_events_tests.rs"]
+mod tests;

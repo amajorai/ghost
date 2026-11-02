@@ -198,15 +198,6 @@ pub(super) fn str_to_button(s: &str) -> MouseButton {
     }
 }
 
-/// Keep the overlay label useful without putting the full query or selector in
-/// the action protocol. The overlay applies a final length bound as well.
-fn click_intent(target: Option<&str>) -> String {
-    match target.map(str::trim).filter(|value| !value.is_empty()) {
-        Some(target) => format!("Click “{target}”"),
-        None => "Click".to_owned(),
-    }
-}
-
 /// Press at a resolved screen point with the call's `button` and `count`,
 /// bracketed by the overlay's press events, and report how it was delivered.
 pub(super) async fn click_at(
@@ -218,7 +209,7 @@ pub(super) async fn click_at(
 ) -> Result<&'static str> {
     let button = str_to_button(str_param(params, "button").unwrap_or("left"));
     let count = int_param(params, "count", 1) as u32;
-    let intent = click_intent(target);
+    let intent = overlay_events::GhostIntent::click(target);
     overlay_events::press_start_with_intent(x, y, "ghost_click", &intent);
     let via =
         tokio::task::spawn_blocking(move || execute_click(x, y, button, count, plan)).await??;
